@@ -1,0 +1,27 @@
+[project]
+name = "nonna-hub"
+version = "0.1.0"
+description = "Nonna Watch edge hub: turns room audio into sound labels and alerts, then drops the audio"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "ai-edge-litert>=2.4.1",
+    # PyAV 19 breaks faster-whisper 1.2.1's decode_audio (unexpected 'metadata_errors'); 16.1 works
+    "av<17",
+    "faster-whisper>=1.2.1",
+    "numpy",
+    "sounddevice>=0.5",
+]
+
+[project.scripts]
+nonna-hub = "nonna_hub.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""

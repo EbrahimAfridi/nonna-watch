@@ -161,8 +161,8 @@ only hard rule is that a milestone is not "done" until the test for it passes on
 
 ### Track: Edge AI (Ebrahim)
 
-- E1. `uv` project, Python 3.12, YAMNet on the laptop's own mic printing top label + confidence
-  every second.
+- E1. Done: `hub/` uv project, Python 3.12. `uv run nonna-hub listen [FILE ...]` prints YAMNet's
+  top labels every 0.5 s from the laptop mic or from audio files (see `hub/README.md`).
 - E2. Event merger: consecutive identical labels → one event with start/end; drop `Silence` and
   confidence < threshold. Unit tests with synthetic label sequences.
 - E3. Silero VAD → speech segment → faster-whisper per configured language → normalised help-word
@@ -327,6 +327,11 @@ Three people, three AI assistants. To avoid redundant or diverging work:
 - YAMNet works on ~0.975 s windows; keep a rolling buffer rather than classifying exactly one
   chunk at a time.
 - Python 3.14 does not run TensorFlow. Pin 3.12 with `uv`.
+- faster-whisper 1.2.1 cannot load audio files with PyAV 19 (`unexpected keyword argument
+  'metadata_errors'`). `hub/pyproject.toml` pins `av<17`; keep the pin.
+- YAMNet labels real clips loosely. On one ESC-50 clip each: glass breaking reached only ~0.2 for
+  `Glass` / `Breaking` (top label `Coin (dropping)`), and a vacuum cleaner came out as
+  `Jet engine`. Map several labels to one category and tune thresholds on recordings (E2).
 - Streaming 16 kHz 16-bit mono is 32 KB/s ≈ 2.76 GB/day per listener. That number is the
   privacy and bandwidth argument for the edge; measure it in Experiment 2.
 - Citations in the requirements dated 2026 (WHO 842,000, Raspberry Pi $85, ISTAT Feb 2026)
