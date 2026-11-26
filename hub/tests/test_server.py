@@ -4,12 +4,13 @@ from contextlib import contextmanager
 
 import numpy as np
 import pytest
-from fakes import FakeWhisper, loud_parts
+from fakes import FakeWhisper, ScriptedWhisper, ThudInFirstWindow, loud_parts
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from nonna_hub import server
 from nonna_hub.help_words import DEFAULT_HELP_WORDS
-from nonna_hub.protocol import encode_frame
+from nonna_hub.protocol import encode_frame, now_ms
 from nonna_hub.server import Hub, create_app
 from nonna_hub.sound import SoundClassifier
 from nonna_hub.speech import SpeechListener
@@ -59,10 +60,16 @@ def frame(seq, samples=None):
 
 
 def wait_until_handled(websocket):
-    """The hub handles a phone's messages in order, so its reply to a broken one means earlier ones are done."""
+    """The hub handles a phone's messages in order, so its reply to a broken one means earlier ones are done.
+
+    Returns whatever else the hub sent meanwhile, such as an ask.
+    """
     websocket.send_text("not json")
-    reply = websocket.receive_json()
+    others = []
+    while (reply := websocket.receive_json())["type"] != "error":
+        others.append(reply)
     assert reply["code"] == "bad_message" and reply["message"].startswith("Expecting value"), reply
+    return others
 
 
 def devices(client):
@@ -195,7 +202,9 @@ def test_rest_needs_the_token_except_health(client):
     assert client.get("/devices", headers=AUTH).json() == []
 
 
-def test_ask_reaches_the_phone_and_waits_for_ask_played(client):
+def test_a_room_runs_one_voice_check_at_a_time(client, monkeypatch):
+    monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.2)
+
     def ask_kitchen():
         return client.post("/ask", params={"room": "kitchen"}, headers=AUTH)
 
@@ -203,10 +212,107 @@ def test_ask_reaches_the_phone_and_waits_for_ask_played(client):
     with phone(client) as websocket:
         ask_id = ask_kitchen().json()["ask_id"]
         ask = websocket.receive_json()
-        while_waiting = ask_kitchen().status_code
+        while_running = ask_kitchen().status_code
         websocket.send_json({"type": "ask_played", "ask_id": ask_id, "ok": True, "started_ms": 1, "ended_ms": 2})
         wait_until_handled(websocket)
-        after_played = ask_kitchen().status_code
+        eventually(lambda: ask_kitchen().status_code == 200)  # once the answer window has passed
 
-    assert (ask["type"], ask["ask_id"], ask["reason"]) == ("ask", ask_id, "manual")
-    assert (while_waiting, after_played) == (409, 200)
+    assert (ask["type"], ask["ask_id"], ask["reason"], ask["text"]) == ("ask", ask_id, "manual", "Are you okay?")
+    assert while_running == 409
+
+
+# The voice check, end to end. Capture times start now, as with a real phone, so that the hub can tell
+# speech heard after it asked from speech before.
+
+
+@contextmanager
+def hub_hearing(classifier, whisper, sent, categorizer=None):
+    hub = Hub(
+        TOKEN,
+        "test-hub",
+        classifier,
+        lambda: SpeechListener(whisper, ["it"], DEFAULT_HELP_WORDS, find_speech=loud_parts),
+        send_alert=sent.append,
+        checkin_language="it",
+    )
+    if categorizer:
+        hub.categorizer = categorizer
+    with TestClient(create_app(hub)) as client:
+        yield client
+
+
+def stream(websocket, start_ms, levels, first_seq=0):
+    """Send one second of audio per level, 0.5 for speech and 0 for silence, captured from start_ms."""
+    for index, level in enumerate(levels):
+        seq = first_seq + index
+        samples = np.full(16_000, level, dtype=np.float32)
+        websocket.send_bytes(encode_frame(start_ms + 1000 * seq, seq, samples))
+    return wait_until_handled(websocket)
+
+
+def played(websocket, ask, start_ms, ended_after_s):
+    ended_ms = start_ms + int(1000 * ended_after_s)
+    websocket.send_json({"type": "ask_played", "ask_id": ask["ask_id"], "ok": True, "started_ms": 0, "ended_ms": ended_ms})
+
+
+def test_a_reassuring_answer_after_a_help_word_sends_a_follow_up(classifier):
+    sent = []
+    # Whisper hears the shout, then the phone's own question, then the answer.
+    whisper = ScriptedWhisper("Aiuto!", "Stai bene?", "Sì, sto bene.")
+    start = now_ms()
+    with hub_hearing(classifier, whisper, sent) as client, phone(client) as websocket:
+        [ask] = stream(websocket, start, [0.5, 0])
+        stream(websocket, start, [0.5, 0], first_seq=2)  # the question, heard by the phone's own mic
+        played(websocket, ask, start, ended_after_s=3)
+        stream(websocket, start, [0.5, 0], first_seq=4)
+        eventually(lambda: len(sent) == 2)
+
+    assert ask["text"] == "Stai bene?" and ask["reason"] == "help_word"
+    assert 'Help word "aiuto"' in sent[0]
+    assert 'the answer to the check-in question was "sto bene"' in sent[1]
+
+
+def thud_then_ask(websocket, start):
+    """A thud, then ten seconds without movement: the hub asks before it alerts."""
+    asks = stream(websocket, start, [0] * 11)
+    assert [ask["reason"] for ask in asks] == ["thud"]
+    return asks[0]
+
+
+def test_a_thud_without_an_answer_alerts(classifier, monkeypatch):
+    monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.2)
+    sent = []
+    start = now_ms()
+    with hub_hearing(classifier, ScriptedWhisper(), sent, ThudInFirstWindow()) as client, phone(client) as websocket:
+        ask = thud_then_ask(websocket, start)
+        assert sent == []
+        played(websocket, ask, start, ended_after_s=10.5)
+        eventually(lambda: sent)
+
+    assert "possible fall" in sent[0] and "No answer to the check-in question." in sent[0]
+
+
+def test_a_thud_answered_sto_bene_does_not_alert(classifier, monkeypatch, capsys):
+    monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.5)
+    sent = []
+    start = now_ms()
+    with hub_hearing(classifier, ScriptedWhisper("Sto bene"), sent, ThudInFirstWindow()) as client:
+        with phone(client) as websocket:
+            ask = thud_then_ask(websocket, start)
+            played(websocket, ask, start, ended_after_s=10.5)
+            stream(websocket, start, [0.5, 0], first_seq=11)
+            eventually(lambda: "CHECK        thud: fine sto bene" in capsys.readouterr().out)
+        time.sleep(0.6)  # past the answer window: nothing may be sent late
+
+    assert sent == []
+
+
+def test_a_thud_alerts_when_the_phone_cannot_ask(classifier, monkeypatch):
+    monkeypatch.setattr(server, "ASK_PLAYED_TIMEOUT_S", 0.2)
+    sent = []
+    start = now_ms()
+    with hub_hearing(classifier, ScriptedWhisper(), sent, ThudInFirstWindow()) as client, phone(client) as websocket:
+        thud_then_ask(websocket, start)
+        eventually(lambda: sent)
+
+    assert "possible fall" in sent[0] and "could not ask the check-in question" in sent[0]

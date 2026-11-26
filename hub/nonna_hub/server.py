@@ -1,7 +1,8 @@
 """The hub server: listener phones stream audio over a WebSocket, as docs/api-contract.md describes.
 
 Each phone's audio becomes household events (YAMNet) and help words (VAD and Whisper), printed with
-the room. The detection rules turn them into alerts, which go to the family's Telegram group.
+the room. The detection rules turn them into alerts for the family's Telegram group, with the voice
+check ("Are you okay?") before or after them as CONTEXT.md section 4 says.
 """
 
 import asyncio
@@ -9,8 +10,8 @@ import contextlib
 import secrets
 import socket
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass, field, replace
 from importlib.metadata import version
 
 import uvicorn
@@ -36,17 +37,13 @@ from nonna_hub.protocol import (
     parse_frame,
     parse_message,
 )
-from nonna_hub.rules import Alert, RoomRules
+from nonna_hub.rules import CHECK_AFTER, CHECK_FIRST, Alert, RoomRules, follow_up_message
 from nonna_hub.sound import HOP_SAMPLES, SoundClassifier
 from nonna_hub.speech import SpeechListener, Transcriber, Utterance
 from nonna_hub.telegram import Telegram, TelegramError
+from nonna_hub.voice_check import ANSWER_WAIT_S, ASK_PLAYED_TIMEOUT_S, QUESTIONS, VoiceCheck, is_question
 
 HELLO_TIMEOUT_S = 10
-ASK_TIMEOUT_MS = 20_000  # the contract treats a check as failed after 20 s without ask_played
-
-# Until E8 reads the home's check-in text and language from Firestore.
-CHECKIN_TEXT = "Are you okay?"
-CHECKIN_LANG = "en-US"
 
 
 @dataclass
@@ -57,6 +54,7 @@ class Listener:
     events: EventMerger
     speech: SpeechListener
     rules: RoomRules = field(default_factory=RoomRules)
+    voice_check: VoiceCheck | None = None  # at most one check per room at a time
     connected_since_ms: int = field(default_factory=now_ms)
     next_seq: int = 0
     last_frame_ms: int | None = None
@@ -64,15 +62,10 @@ class Listener:
     frames_missing: int = 0
     battery_pct: int | None = None
     paused: bool = False
-    pending_ask_id: str | None = None
-    pending_ask_sent_ms: int = 0
 
     @property
     def room(self) -> str:
         return self.hello.room
-
-    def ask_pending(self) -> bool:
-        return self.pending_ask_id is not None and now_ms() - self.pending_ask_sent_ms < ASK_TIMEOUT_MS
 
 
 class Hub:
@@ -83,6 +76,7 @@ class Hub:
         classifier: SoundClassifier,
         new_speech_listener: Callable[[], SpeechListener],
         send_alert: Callable[[str], None] | None = None,
+        checkin_language: str = "en",
     ):
         self._token = token.encode()
         self.hub_id = hub_id
@@ -90,7 +84,8 @@ class Hub:
         self.categorizer = Categorizer(classifier.labels)
         self._new_speech_listener = new_speech_listener
         self._send_alert = send_alert
-        self._sending: set[asyncio.Task] = set()  # held so pending sends are not garbage-collected
+        self._question = QUESTIONS[checkin_language]
+        self._tasks: set[asyncio.Task] = set()  # background work, held so it is not garbage-collected
         self.listeners: dict[str, Listener] = {}  # by room: one listener per room
         self.started_ms = now_ms()
 
@@ -138,8 +133,7 @@ class Hub:
                     await self._handle_text(listener, message["text"])
             # A phone that drops right after "aiuto" must still raise the help word.
             for said in await asyncio.to_thread(listener.speech.flush):
-                print_help(listener.room, said)
-                self._raise_alerts(listener, listener.rules.on_speech(said))
+                await self._on_speech(listener, said)
         except WebSocketDisconnect:
             pass
         finally:
@@ -150,16 +144,20 @@ class Hub:
                     del self.listeners[listener.room]
                     print(f"{listener.room:<12} disconnected")
 
-    async def ask(self, listener: Listener, reason: str) -> str:
-        """Tell a phone to play the check-in question (the voice check in docs/api-contract.md)."""
-        ask_id = f"{listener.room}-{now_ms()}"
-        await listener.websocket.send_json(
-            {"type": "ask", "ask_id": ask_id, "reason": reason, "text": CHECKIN_TEXT, "lang": CHECKIN_LANG}
-        )
-        listener.pending_ask_id = ask_id
-        listener.pending_ask_sent_ms = now_ms()
-        print(f"{listener.room:<12} asked: {CHECKIN_TEXT}")
-        return ask_id
+    async def start_voice_check(self, listener: Listener, alert: Alert | None = None, alert_sent: bool = False) -> str:
+        """Have the phone ask "Are you okay?", then wait for the answer in the background."""
+        text, lang = self._question
+        check = VoiceCheck(f"{listener.room}-{now_ms()}", alert, alert_sent)
+        listener.voice_check = check
+        try:
+            ask = {"type": "ask", "ask_id": check.ask_id, "reason": check.reason, "text": text, "lang": lang}
+            await listener.websocket.send_json(ask)
+        except WebSocketDisconnect:
+            listener.voice_check = None
+            raise
+        print(f"{listener.room:<12} asked: {text}")
+        self._in_background(self._finish_voice_check(listener, check))
+        return check.ask_id
 
     def devices(self) -> list[dict]:
         return [
@@ -225,33 +223,86 @@ class Hub:
             for event in listener.events.push(window_ms, detections):
                 print_event(listener.room, event)
             alerts += listener.rules.on_window(window_ms, detections)
-        self._raise_alerts(listener, alerts)
+        await self._act_on(listener, alerts)
         # Whisper takes about a second, so it runs off the event loop and other rooms keep going.
         for said in await asyncio.to_thread(listener.speech.push, samples, capture_ms):
-            print_help(listener.room, said)
-            self._raise_alerts(listener, listener.rules.on_speech(said))
+            await self._on_speech(listener, said)
 
-    def _raise_alerts(self, listener: Listener, alerts: list[Alert]) -> None:
-        """Print each alert with how long it took to get here, then send it without waiting."""
+    async def _on_speech(self, listener: Listener, said: Utterance) -> None:
+        check = listener.voice_check
+        if check and is_question(said, check.sent_ms, check.ended_ms):
+            return  # the phone's own question, which can contain "aiuto" or "bene"
+        print_help(listener.room, said)
+        if check:
+            check.hear(said)
+        await self._act_on(listener, listener.rules.on_speech(said))
+
+    async def _act_on(self, listener: Listener, alerts: list[Alert]) -> None:
+        """Send each alert, with the voice check first or after it (CONTEXT.md section 4)."""
         for alert in alerts:
-            received_s = (listener.last_frame_ms - alert.at_ms) / 1000
-            detected_s = (now_ms() - alert.at_ms) / 1000
-            what = f"{alert.kind} {alert.detail}".strip()
-            timing = f"received +{received_s:.1f} s, detected +{detected_s:.1f} s"
-            print(f"{listener.room:<12} {clock(alert.at_ms)}   ALERT        {what}   {timing}")
-            if self._send_alert:
-                task = asyncio.create_task(self._send(listener.room, alert))
-                self._sending.add(task)
-                task.add_done_callback(self._sending.discard)
+            if alert.kind in CHECK_FIRST and listener.voice_check is None:
+                try:
+                    await self.start_voice_check(listener, alert)
+                except WebSocketDisconnect:
+                    self._raise_alert(listener, replace(alert, check_outcome="not_played"))
+                continue
+            # Also reached by a thud or glass while a check is already running: alert straight away.
+            self._raise_alert(listener, alert)
+            if alert.kind in CHECK_AFTER and listener.voice_check is None:
+                with contextlib.suppress(WebSocketDisconnect):
+                    await self.start_voice_check(listener, alert, alert_sent=True)
 
-    async def _send(self, room: str, alert: Alert) -> None:
+    async def _finish_voice_check(self, listener: Listener, check: VoiceCheck) -> None:
         try:
-            await asyncio.to_thread(self._send_alert, alert.message(room))
+            played = await asyncio.wait_for(check.played, ASK_PLAYED_TIMEOUT_S)
+            if played.ok:
+                outcome, detail = await asyncio.wait_for(check.answered, ANSWER_WAIT_S)
+            else:
+                outcome, detail = "not_played", played.reason
+        except TimeoutError:
+            outcome, detail = ("no_answer", "") if check.ended_ms is not None else ("not_played", "no ask_played")
+        finally:
+            if listener.voice_check is check:
+                listener.voice_check = None
+        print(f"{listener.room:<12} {clock(now_ms())}   CHECK        {check.reason}: {outcome} {detail}".rstrip())
+
+        if check.alert is None:
+            return  # asked for through POST /ask: the line above is the whole result
+        if not check.alert_sent:
+            if outcome != "fine":
+                self._raise_alert(listener, replace(check.alert, check_outcome=outcome))
+        elif outcome == "fine":
+            print(f"{listener.room:<12} {clock(check.alert.at_ms)}   FOLLOW-UP    answered \"{detail}\"")
+            message = follow_up_message(check.alert, listener.room, detail)
+            self._deliver_later(listener.room, check.alert.at_ms, message)
+
+    def _raise_alert(self, listener: Listener, alert: Alert) -> None:
+        """Print the alert with how long it took to get here, then send it without waiting."""
+        received_s = (listener.last_frame_ms - alert.at_ms) / 1000
+        detected_s = (now_ms() - alert.at_ms) / 1000
+        after_check = f"after the check: {alert.check_outcome}" if alert.check_outcome else ""
+        what = " ".join(part for part in (alert.kind, alert.detail, after_check) if part)
+        timing = f"received +{received_s:.1f} s, detected +{detected_s:.1f} s"
+        print(f"{listener.room:<12} {clock(alert.at_ms)}   ALERT        {what}   {timing}")
+        self._deliver_later(listener.room, alert.at_ms, alert.message(listener.room))
+
+    def _deliver_later(self, room: str, at_ms: int, text: str) -> None:
+        if self._send_alert:
+            self._in_background(self._deliver(room, at_ms, text))
+
+    async def _deliver(self, room: str, at_ms: int, text: str) -> None:
+        try:
+            await asyncio.to_thread(self._send_alert, text)
         except (OSError, TelegramError) as error:
-            print(f"{room:<12} {clock(alert.at_ms)}   NOT SENT     {error}")
+            print(f"{room:<12} {clock(at_ms)}   NOT SENT     {error}")
             return
-        sent_s = (now_ms() - alert.at_ms) / 1000
-        print(f"{room:<12} {clock(alert.at_ms)}   SENT         +{sent_s:.1f} s after the sound")
+        sent_s = (now_ms() - at_ms) / 1000
+        print(f"{room:<12} {clock(at_ms)}   SENT         +{sent_s:.1f} s after the sound")
+
+    def _in_background(self, work: Coroutine) -> None:
+        task = asyncio.create_task(work)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _handle_text(self, listener: Listener, text: str) -> None:
         try:
@@ -268,10 +319,18 @@ class Hub:
                 print(f"{listener.room:<12} heartbeat: battery {message.battery_pct}%{charging}{paused}")
             case Light():
                 print(f"{listener.room:<12} light {message.state} ({message.lux:.0f} lux) at {clock(message.ts_ms)}")
-            case AskPlayed() if message.ask_id == listener.pending_ask_id:
-                listener.pending_ask_id = None
-                outcome = "played" if message.ok else f"not played ({message.reason or 'no reason given'})"
-                print(f"{listener.room:<12} check-in question {outcome}")
+            case AskPlayed():
+                self._on_ask_played(listener, message)
+
+    def _on_ask_played(self, listener: Listener, message: AskPlayed) -> None:
+        check = listener.voice_check
+        if check is None or message.ask_id != check.ask_id or check.played.done():
+            return
+        if message.ok:
+            check.ended_ms = message.ended_ms or now_ms()
+        check.played.set_result(message)
+        outcome = "played" if message.ok else f"not played ({message.reason or 'no reason given'})"
+        print(f"{listener.room:<12} check-in question {outcome}")
 
     def _new_slicer(self) -> WindowSlicer:
         return WindowSlicer(window=self.classifier.window_samples, hop=HOP_SAMPLES)
@@ -299,10 +358,10 @@ def create_app(hub: Hub) -> FastAPI:
         listener = hub.listeners.get(room)
         if listener is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"no listener is connected in {room}")
-        if listener.ask_pending():
-            raise HTTPException(status.HTTP_409_CONFLICT, f"{room} has not answered the previous ask yet")
+        if listener.voice_check:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"a voice check is already running in {room}")
         try:
-            return {"ask_id": await hub.ask(listener, reason="manual")}
+            return {"ask_id": await hub.start_voice_check(listener)}
         except WebSocketDisconnect:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"the {room} listener just left") from None
 
@@ -321,9 +380,10 @@ def serve(token: str, hub_id: str, port: int, languages: list[str], telegram: Te
         SoundClassifier(),
         lambda: SpeechListener(transcriber, languages, DEFAULT_HELP_WORDS),
         send_alert=telegram.send if telegram else None,
+        checkin_language=languages[0],
     )
     print(f"Phones connect to ws://{lan_address()}:{port}/ws/listener with HUB_TOKEN from hub/.env")
-    print(f"Listening for help words in: {', '.join(languages)}")
+    print(f"Listening for help words in: {', '.join(languages)}. Check-in question: {QUESTIONS[languages[0]][0]}")
     if telegram:
         print("Alerts go to the Telegram group in TELEGRAM_CHAT_ID")
     else:

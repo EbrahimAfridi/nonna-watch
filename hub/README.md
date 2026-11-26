@@ -103,6 +103,23 @@ with files never reaches the family. To set Telegram up once:
 
 Without these two settings the hub still runs, and alerts only appear in its console.
 
+## Voice check
+
+The phone asks "Are you okay?" (in the home's first language, so `Stai bene?` for `--languages
+it,en`) and the hub listens for 30 s after the question ends:
+
+- Thud or glass: the hub asks first and alerts only on a help word, no answer, or a phone that
+  cannot play the question.
+- Help word, screaming or crying: the alert goes out at once; if the answer is reassuring, a
+  follow-up says so.
+
+Fine words are in `nonna_hub/voice_check.py`. An answer with a negation ("non sto bene", "I'm not
+okay") never counts as fine, so the check errs towards alerting. Everything heard while the question
+plays is ignored, because the question itself says "bene".
+
+To try it, connect a fake phone (it pretends to play the question for 2 s) and start a check from
+http://localhost:8000/docs (`POST /ask`), then answer into the laptop mic.
+
 ## Test
 
 ```

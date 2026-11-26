@@ -38,11 +38,11 @@ def words(text: str) -> list[str]:
     return found
 
 
-def find_help_words(text: str, help_words: Iterable[str]) -> list[str]:
-    """The help words, or phrases of several words, that appear as whole words in the text."""
+def find_phrases(text: str, phrases: Iterable[str]) -> list[str]:
+    """The phrases (help words, fine words, one word or several) that appear as whole words."""
     spoken = words(text)
     found = []
-    for phrase in help_words:
+    for phrase in phrases:
         wanted = words(phrase)
         if wanted and any(spoken[i : i + len(wanted)] == wanted for i in range(len(spoken) - len(wanted) + 1)):
             found.append(phrase)

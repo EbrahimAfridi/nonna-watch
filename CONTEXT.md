@@ -182,11 +182,15 @@ only hard rule is that a milestone is not "done" until the test for it passes on
   room + time. Timestamp log at every hop (captured / hub received / AI done / alert sent).
   Done: `rules.py` (plus crying and smoke alarm from the table in section 4) and `telegram.py`;
   `serve` prints each alert with its hops and sends it to Telegram; `telegram-test` checks the
-  bot and finds the group's chat id. Thud and glass alert directly until E7 asks first (D26).
+  bot and finds the group's chat id. Since E7, thud and glass ask first (D26, D27).
 - E6. Firestore sync: batched events every 1–5 min, heartbeat every 5 min, alerts immediately.
   Offline queue: if internet drops, keep working and flush later.
 - E7. Voice check hub side: send `ask` to the phone, listen 30 s for "fine"-words or help words,
   alert on silence or help, follow-up message if she answers after an instant alert.
+  Done: `voice_check.py` and the flow in `server.py`, as the table in section 4 says. Speech
+  while the question plays is ignored; any negation ("non sto bene") never counts as fine; the
+  question is asked in the home's first language (D27). Checked through a fake phone: "aiuto" →
+  alert → "Stai bene?" → "sì, sto bene" → follow-up.
 - E8. Multi-room, smoke alarm, long-running water; hub config from `homes/{id}` settings.
 - E9. If no billing (section 11): the routine / long-silence / offline checks as a 15-minute loop
   inside the hub, using B's logic.

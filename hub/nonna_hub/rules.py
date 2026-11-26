@@ -1,8 +1,4 @@
-"""Detection rules from CONTEXT.md section 4: which sounds and words alert the family.
-
-Thuds and glass are meant to trigger the voice check ("Are you okay?") first. Until that exists
-(E7), they alert directly like the others.
-"""
+"""Detection rules from CONTEXT.md section 4: which sounds and words alert the family."""
 
 import time
 from dataclasses import dataclass
@@ -15,6 +11,15 @@ INSTANT = ("scream", "distress", "glass", "smoke_alarm")  # alert on the first w
 SIGNS_OF_LIFE = {"speech", "footsteps", "door", "cough", "cooking", "toilet", "grooming"}
 THUD_SILENCE_MS = 10_000
 COOLDOWN_MS = 60_000  # at most one alert of each kind per room per minute, however long the sound lasts
+
+CHECK_FIRST = ("thud", "glass")  # ask "Are you okay?" first; alert only without a reassuring answer
+CHECK_AFTER = ("help_word", "scream", "distress")  # alert at once, then ask; "fine" sends a follow-up
+
+CHECK_OUTCOMES = {
+    "help": "Asked for help when checked.",
+    "no_answer": "No answer to the check-in question.",
+    "not_played": "The listener could not ask the check-in question.",
+}
 
 MESSAGES = {
     "help_word": 'Help word "{detail}" heard in the {room} at {time}.',
@@ -31,11 +36,26 @@ class Alert:
     kind: str  # a key of MESSAGES
     at_ms: int  # when the sound was captured
     detail: str = ""  # the help words heard, for help_word
+    check_outcome: str = ""  # a key of CHECK_OUTCOMES, for an alert raised after a voice check
 
     def message(self, room: str) -> str:
-        clock = time.strftime("%H:%M:%S", time.localtime(self.at_ms / 1000))
-        text = MESSAGES[self.kind].format(detail=self.detail, room=room.replace("_", " "), time=clock)
+        text = MESSAGES[self.kind].format(detail=self.detail, room=room.replace("_", " "), time=local_time(self.at_ms))
+        if self.check_outcome:
+            text += " " + CHECK_OUTCOMES[self.check_outcome]
         return f"Nonna Watch: {text}"
+
+
+def follow_up_message(alert: Alert, room: str, answer: str) -> str:
+    """After an alert that went out at once: the reassuring answer to the voice check."""
+    where = room.replace("_", " ")
+    return (
+        f"Nonna Watch: After the alert in the {where} at {local_time(alert.at_ms)}, "
+        f'the answer to the check-in question was "{answer}".'
+    )
+
+
+def local_time(epoch_ms: int) -> str:
+    return time.strftime("%H:%M:%S", time.localtime(epoch_ms / 1000))
 
 
 class RoomRules:

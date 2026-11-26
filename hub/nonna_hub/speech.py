@@ -12,7 +12,7 @@ from faster_whisper import WhisperModel
 from faster_whisper.vad import VadOptions, get_speech_timestamps
 
 from nonna_hub.audio import SAMPLE_RATE
-from nonna_hub.help_words import find_help_words
+from nonna_hub.help_words import find_phrases
 from nonna_hub.sound import MODELS_DIR
 
 WHISPER_MODEL = "base"
@@ -117,7 +117,7 @@ class SpeechListener:
         speech = self._audio[start:end]
         texts = {language: self._transcribe(speech, language) for language in self._languages}
         found = [
-            word for language, text in texts.items() for word in find_help_words(text, self._help_words[language])
+            word for language, text in texts.items() for word in find_phrases(text, self._help_words[language])
         ]
         unique = list(dict.fromkeys(found))  # "bachao" can match in both Hindi and Urdu
         return Utterance(self._ms(start), self._ms(end), texts, unique)

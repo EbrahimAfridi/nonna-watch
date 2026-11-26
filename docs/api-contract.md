@@ -226,8 +226,9 @@ Codes: `bad_hello`, `bad_frame`, `bad_message`. For logging; only `bad_hello` is
 1. The hub decides to ask (for example a thud followed by 10 s of silence) and sends `ask`.
 2. The phone plays the clip, or text-to-speech, while still streaming.
 3. The phone sends `ask_played` with `started_ms` and `ended_ms`.
-4. The hub ignores help words heard between sending `ask` and `ended_ms`, because the question
-   itself may contain one ("hai bisogno di aiuto?"). It then listens for 30 s after `ended_ms`.
+4. The hub ignores everything heard between sending `ask` and `ended_ms`, because the question
+   itself may contain a help word ("hai bisogno di aiuto?") or a fine word ("stai bene?"). It then
+   listens for 30 s after `ended_ms`.
 5. "Sto bene" / "I'm fine": logged, no alert. A help word, or no answer at all: the family is
    alerted.
 6. No `ask_played` within 20 s of `ask`: the hub treats the check as failed and alerts the family.
@@ -252,7 +253,7 @@ Everything except `/health` needs the same bearer token.
 |---|---|---|
 | GET | `/health` | `{"status": "ok", "hub_id": "...", "version": "...", "uptime_s": 123}` |
 | GET | `/devices` | Connected listeners: `device_id`, `room`, `connected_since_ms`, `last_frame_ms`, `frames_received`, `frames_missing`, `battery_pct`, `paused` |
-| POST | `/ask?room=kitchen` | Starts a voice check in that room: `{"ask_id": "..."}`. 404 if no listener is connected there; 409 while the previous ask still waits for `ask_played` (up to 20 s). |
+| POST | `/ask?room=kitchen` | Starts a voice check in that room: `{"ask_id": "..."}`. 404 if no listener is connected there; 409 while a voice check is still running there (under a minute). |
 
 ```
 curl -H "Authorization: Bearer $HUB_TOKEN" http://192.168.43.12:8000/devices
@@ -296,3 +297,5 @@ The room is still picked on the phone.
 - Protocol 1 (2026-11-26): first version.
 - Protocol 1 clarifications (2026-11-26, D23): 4409 also covers a second phone in the same room;
   `/ask` answers 409 while an ask is pending. The phone's behaviour does not change.
+- Protocol 1 clarifications (2026-11-26, D27): while the question plays the hub ignores fine words
+  too, not only help words; `/ask` answers 409 for the whole voice check. No change for the phone.
