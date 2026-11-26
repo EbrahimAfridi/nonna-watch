@@ -1,0 +1,144 @@
+rules_version = '2';
+
+// Nonna Watch security rules. The plain-words version is in docs/firestore-schema.md.
+//
+// These rules only apply to the apps (family app, phone-only listener), which sign in with Google.
+// The hub, the routine checks and the seed script use a service account (Admin SDK), which
+// bypasses rules entirely.
+//
+// Anything not explicitly allowed below is denied.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+
+    // Signed in with a verified email (Google Sign-In always provides one).
+    function signedIn() {
+      return request.auth != null
+        && 'email' in request.auth.token
+        && request.auth.token.email_verified == true;
+    }
+
+    function myEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    // Is the signed-in user listed in homes/{homeId}.memberEmails?
+    // get() reads the home document. If the home doesn't exist, this is false.
+    function isMember(homeId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/homes/$(homeId))
+        && myEmail() in get(/databases/$(database)/documents/homes/$(homeId)).data.memberEmails;
+    }
+
+    function statusRank(s) {
+      return s == 'sent' ? 0 : (s == 'seen' ? 1 : (s == 'resolved' ? 2 : -1));
+    }
+
+    // ---------- homes ----------
+
+    match /homes/{homeId} {
+      // "read" covers both get (one doc) and list (a query). A query is only allowed if it
+      // filters to homes the user is in: where("memberEmails", "array-contains", myLowercaseEmail).
+      allow read: if signedIn() && myEmail() in resource.data.memberEmails;
+
+      allow update: if signedIn()
+        && myEmail() in resource.data.memberEmails
+        // You can add other family members, but you can't remove yourself by accident.
+        && myEmail() in request.resource.data.memberEmails
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'name', 'timezone', 'languages', 'helpWords', 'fineWords', 'familyContacts',
+             'memberEmails', 'telegramChatId', 'mode', 'settings', 'checkInClip'])
+        && request.resource.data.mode in ['normal', 'visitor', 'away']
+        && request.resource.data.languages is list
+        && request.resource.data.helpWords is map
+        && request.resource.data.settings is map;
+
+      // Homes are created and deleted only by the service account (seed script / admin).
+      allow create, delete: if false;
+
+      // ---------- devices ----------
+      match /devices/{deviceId} {
+        allow read: if isMember(homeId);
+
+        // Phone-only mode (A10): the listener writes its own heartbeat.
+        // It can never create or overwrite the hub's document.
+        allow create: if isMember(homeId) && validListener(request.resource.data);
+        allow update: if isMember(homeId)
+          && resource.data.kind == 'listener'
+          && validListener(request.resource.data);
+        allow delete: if false;
+      }
+
+      function validListener(d) {
+        return d.keys().hasAll(['kind', 'room', 'lastHeartbeat'])
+          && d.keys().hasOnly(['kind', 'room', 'lastHeartbeat', 'online', 'target', 'battery'])
+          && d.kind == 'listener'
+          && d.room is string
+          && d.lastHeartbeat is timestamp;
+      }
+
+      // ---------- events ----------
+      match /events/{eventId} {
+        allow read: if isMember(homeId);
+        // Only phone-only mode creates events from an app; the hub uses the Admin SDK.
+        allow create: if isMember(homeId) && validPhoneEvent(request.resource.data);
+        // The timeline is history: nobody edits or deletes it from an app.
+        allow update, delete: if false;
+      }
+
+      function validPhoneEvent(d) {
+        return d.keys().hasAll(['room', 'deviceId', 'sound', 'confidence', 'start', 'end', 'source'])
+          && d.keys().hasOnly(['room', 'deviceId', 'sound', 'confidence', 'start', 'end', 'source'])
+          && d.source == 'phone'
+          && d.room is string
+          && d.sound is string
+          && d.confidence is number && d.confidence >= 0 && d.confidence <= 1
+          && d.start is timestamp && d.end is timestamp
+          && d.end >= d.start;
+      }
+
+      // ---------- alerts ----------
+      match /alerts/{alertId} {
+        allow read: if isMember(homeId);
+
+        // Phone-only mode can raise the alerts YAMNet alone can detect (no help words, D4).
+        allow create: if isMember(homeId) && validPhoneAlert(request.resource.data);
+
+        // The family can only move an alert forward (sent -> seen -> resolved) and sign it.
+        allow update: if isMember(homeId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['status', 'answeredBy', 'seenAt', 'resolvedAt'])
+          && statusRank(request.resource.data.status) >= statusRank(resource.data.status)
+          && statusRank(request.resource.data.status) >= 0
+          && request.resource.data.answeredBy == myEmail();
+
+        allow delete: if false;
+      }
+
+      function validPhoneAlert(d) {
+        return d.keys().hasAll(['type', 'severity', 'room', 'time', 'message', 'status', 'source'])
+          && d.keys().hasOnly(['type', 'severity', 'room', 'time', 'message', 'status', 'source',
+                               'detail', 'voiceCheck', 'timings'])
+          && d.source == 'phone'
+          && d.status == 'sent'
+          && d.type in ['scream', 'crying', 'thud_silence', 'glass', 'smoke_alarm']
+          && d.severity in ['alert', 'notice']
+          && d.time is timestamp
+          && d.message is string;
+      }
+
+      // ---------- routines ----------
+      match /routines/{routineId} {
+        allow read: if isMember(homeId);
+        allow write: if false;   // only the routine learner (service account)
+      }
+    }
+
+    // ---------- users ----------
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}

@@ -1,0 +1,63 @@
+"""Tests for the fake-history generator (C4). No database needed: `uv run pytest`."""
+
+from datetime import date, timedelta
+from zoneinfo import ZoneInfo
+
+from nonna_cloud.seed import event_id, generate
+
+TZ = ZoneInfo("Europe/Rome")
+TODAY = date(2026, 11, 26)          # a Thursday
+
+
+def local_days(events):
+    return {e["start"].astimezone(TZ).date() for e in events}
+
+
+def test_covers_the_days_before_today_and_leaves_today_empty():
+    events = generate(14, today=TODAY)
+    days = local_days(events)
+    assert min(days) == TODAY - timedelta(days=14)
+    assert max(days) == TODAY - timedelta(days=1)
+    assert TODAY not in days
+
+
+def test_same_seed_gives_same_history():
+    assert generate(3, today=TODAY, seed=1) == generate(3, today=TODAY, seed=1)
+    assert generate(3, today=TODAY, seed=1) != generate(3, today=TODAY, seed=2)
+
+
+def test_events_follow_the_schema():
+    for e in generate(14, today=TODAY):
+        assert set(e) == {"room", "deviceId", "sound", "confidence", "start", "end", "source"}
+        assert e["source"] == "seed"
+        assert e["room"] in {"kitchen", "bathroom", "bedroom"}
+        assert e["deviceId"] == f"listener-{e['room']}"
+        assert 0 <= e["confidence"] <= 1
+        assert e["end"] >= e["start"]
+        assert e["start"].tzinfo is not None
+
+
+def test_ids_are_unique_so_nothing_is_overwritten():
+    events = generate(14, today=TODAY)
+    assert len({event_id(e) for e in events}) == len(events)
+
+
+def test_size_stays_far_inside_the_free_write_quota():
+    per_day = len(generate(14, today=TODAY)) / 14
+    assert 20 <= per_day <= 60
+
+
+def test_breakfast_in_the_kitchen_almost_every_morning():
+    """The routine demo ("no kitchen sounds by 11:00") only works if history shows it's normal."""
+    events = generate(14, today=TODAY)
+    mornings = {
+        e["start"].astimezone(TZ).date()
+        for e in events
+        if e["room"] == "kitchen" and e["start"].astimezone(TZ).hour < 10
+    }
+    assert len(mornings) >= 12
+
+
+def test_nothing_happens_in_the_middle_of_the_night():
+    for e in generate(14, today=TODAY):
+        assert not 1 <= e["start"].astimezone(TZ).hour < 6
