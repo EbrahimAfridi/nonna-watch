@@ -46,6 +46,10 @@ class WindowSlicer:
         self._pending = np.zeros(0, dtype=np.float32)
         self._pending_start = 0  # stream position, in samples, of _pending[0]
 
+    @property
+    def samples_pushed(self) -> int:
+        return self._pending_start + len(self._pending)
+
     def push(self, chunk: np.ndarray) -> list[tuple[int, np.ndarray]]:
         """Add a chunk; return every window it completes as (start sample, samples)."""
         self._pending = np.concatenate([self._pending, chunk])

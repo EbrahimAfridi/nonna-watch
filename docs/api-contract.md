@@ -53,7 +53,7 @@ recorded in `DECISIONS.md`.
 | 1000 | Normal close (phone stopped listening) | Nothing |
 | 1001 | Hub shutting down | Reconnect with backoff |
 | 4400 | Bad `hello` (unknown protocol, wrong sample rate, unknown room) or audio before `hello` | Stop and show the close reason |
-| 4409 | A newer connection with the same `device_id` replaced this one | Stop; the newer one is live |
+| 4409 | A newer connection for the same room, or with the same `device_id`, replaced this one | Stop; the newer one is live |
 | HTTP 403 on upgrade | Wrong token | Stop and show "wrong token" |
 | Anything else, or a network error | | Reconnect with backoff |
 
@@ -252,7 +252,7 @@ Everything except `/health` needs the same bearer token.
 |---|---|---|
 | GET | `/health` | `{"status": "ok", "hub_id": "...", "version": "...", "uptime_s": 123}` |
 | GET | `/devices` | Connected listeners: `device_id`, `room`, `connected_since_ms`, `last_frame_ms`, `frames_received`, `frames_missing`, `battery_pct`, `paused` |
-| POST | `/ask?room=kitchen` | Starts a voice check in that room: `{"ask_id": "..."}`. 404 if no listener is connected there. |
+| POST | `/ask?room=kitchen` | Starts a voice check in that room: `{"ask_id": "..."}`. 404 if no listener is connected there; 409 while the previous ask still waits for `ask_played` (up to 20 s). |
 
 ```
 curl -H "Authorization: Bearer $HUB_TOKEN" http://192.168.43.12:8000/devices
@@ -294,3 +294,5 @@ The room is still picked on the phone.
 ## Changelog
 
 - Protocol 1 (2026-11-26): first version.
+- Protocol 1 clarifications (2026-11-26, D23): 4409 also covers a second phone in the same room;
+  `/ask` answers 409 while an ask is pending. The phone's behaviour does not change.

@@ -26,6 +26,37 @@ If the microphone only ever shows `Silence`, give your terminal app microphone a
 - macOS: System Settings > Privacy & Security > Microphone
 - Windows: Settings > Privacy & security > Microphone > Let desktop apps access your microphone
 
+## Let phones connect
+
+Once per laptop, create `hub/.env` with a random token. The file is gitignored; share the token
+with teammates privately, never in git, a chat group or a URL. (The command refuses to overwrite an
+existing `.env`.)
+
+```
+uv run python -c "import secrets; open('.env', 'x').write('HUB_TOKEN=' + secrets.token_urlsafe(24) + '\n')"
+```
+
+Start the hub:
+
+```
+uv run --env-file .env nonna-hub serve
+```
+
+It prints the address for the listener app, such as `ws://192.168.43.12:8000/ws/listener`, then
+one line per phone every half second. If macOS or Windows asks whether to accept incoming
+connections, allow it (Windows: private networks).
+
+No phone yet? In a second terminal, a fake phone streams audio files or the laptop mic exactly as
+the app will (docs/api-contract.md):
+
+```
+uv run --env-file .env nonna-hub fake-phone --room kitchen a.wav b.wav
+uv run --env-file .env nonna-hub fake-phone --room bedroom
+```
+
+To try `/devices` and `/ask` from a browser, open http://localhost:8000/docs, click Authorize and
+paste the token from `.env`.
+
 ## Test
 
 ```

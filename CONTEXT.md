@@ -169,6 +169,9 @@ only hard rule is that a milestone is not "done" until the test for it passes on
   match → prints `HELP`.
 - E4. FastAPI WebSocket server: accepts N phones, each registered with a room; runs E1–E3 on the
   incoming stream instead of the laptop mic. Audio stays in RAM only, a few seconds at most.
+  Part 1 done: `nonna-hub serve` implements docs/api-contract.md and labels each phone's audio
+  with YAMNet; `nonna-hub fake-phone` streams files or the laptop mic like a phone, so A can test
+  against a real hub. Left: run E2 and E3 on the stream.
 - E5. Detection rules (help word, scream, thud + 10 s silence, glass) → Telegram alert with
   room + time. Timestamp log at every hop (captured / hub received / AI done / alert sent).
 - E6. Firestore sync: batched events every 1–5 min, heartbeat every 5 min, alerts immediately.

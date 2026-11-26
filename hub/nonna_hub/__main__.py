@@ -1,28 +1,51 @@
-"""Command line: `uv run nonna-hub listen [FILE ...]`."""
+"""Command line: `uv run nonna-hub listen | serve | fake-phone`. See hub/README.md."""
 
 import argparse
+import os
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
 import sounddevice
 
+from nonna_hub import fake_phone, server
 from nonna_hub.audio import SAMPLE_RATE, WindowSlicer, file_chunks, microphone_chunks
+from nonna_hub.protocol import ROOMS
 from nonna_hub.sound import HOP_SAMPLES, SoundClassifier
 
 LABELS_PER_LINE = 3
+MIN_TOKEN_LENGTH = 16
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="nonna-hub", description="Nonna Watch edge hub")
     commands = parser.add_subparsers(dest="command", required=True)
+
     listen = commands.add_parser("listen", help="print what YAMNet hears, every half second")
     listen.add_argument("files", nargs="*", type=Path, help="audio files to label instead of the microphone")
-    args = parser.parse_args()
 
+    serve = commands.add_parser("serve", help="accept listener phones and label their audio")
+    serve.add_argument("--port", type=int, default=8000)
+
+    phone = commands.add_parser("fake-phone", help="stream audio files or the mic to a hub, like a phone")
+    phone.add_argument("--room", required=True, choices=ROOMS)
+    phone.add_argument("--hub", default="ws://localhost:8000/ws/listener", help="default: %(default)s")
+    phone.add_argument("files", nargs="*", type=Path, help="audio files to stream instead of the microphone")
+
+    args = parser.parse_args()
+    if args.command == "listen":
+        listen_to(args.files)
+    elif args.command == "serve":
+        server.serve(hub_token(), os.environ.get("HUB_ID", "hub"), args.port)
+    else:
+        fake_phone.run(args.hub, hub_token(), args.room, args.files)
+
+
+def listen_to(files: list[Path]) -> None:
     classifier = SoundClassifier()
-    if args.files:
-        for path in args.files:
+    if files:
+        for path in files:
             print(f"\n{path.name}")
             print_labels(classifier, file_chunks(path))
     else:
@@ -40,6 +63,16 @@ def print_labels(classifier: SoundClassifier, chunks: Iterable[np.ndarray]) -> N
             top = classifier.top_labels(classifier.scores(window), LABELS_PER_LINE)
             labels = "   ".join(f"{label} {score:.2f}" for label, score in top)
             print(f"{start / SAMPLE_RATE:7.1f} s   {labels}")
+
+
+def hub_token() -> str:
+    token = os.environ.get("HUB_TOKEN", "")
+    if len(token) < MIN_TOKEN_LENGTH:
+        sys.exit(
+            f"HUB_TOKEN is missing or shorter than {MIN_TOKEN_LENGTH} characters. Create hub/.env as "
+            "hub/README.md shows and run with `uv run --env-file .env ...`."
+        )
+    return token
 
 
 if __name__ == "__main__":
