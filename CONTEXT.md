@@ -169,12 +169,15 @@ only hard rule is that a milestone is not "done" until the test for it passes on
   On 105 ESC-50 clips glass was 3/3 with no false alarm in 34 other classes. ESC-50 has no scream,
   fall or smoke alarm, so those need our own recordings.
 - E3. Silero VAD → speech segment → faster-whisper per configured language → normalised help-word
-  match → prints `HELP`.
+  match → prints `HELP`. Done: `speech.py` and `help_words.py`; `listen` and `serve` take
+  `--languages it,en,...`. Checked with the Mac's Italian, English, Hindi and Croatian voices,
+  through fake phones to the real server: every help phrase caught, "helpful" ignored. Default
+  help words and the Hindi/Urdu script rule are D24; only help phrases are shown (D25).
 - E4. FastAPI WebSocket server: accepts N phones, each registered with a room; runs E1–E3 on the
   incoming stream instead of the laptop mic. Audio stays in RAM only, a few seconds at most.
-  Part 1 done: `nonna-hub serve` implements docs/api-contract.md and labels each phone's audio
-  with YAMNet; `nonna-hub fake-phone` streams files or the laptop mic like a phone, so A can test
-  against a real hub. Left: run E2 and E3 on the stream.
+  Done: `nonna-hub serve` implements docs/api-contract.md and runs the events (E2) and help words
+  (E3) on each phone's stream; `nonna-hub fake-phone` streams files or the laptop mic like a
+  phone, so A can test against a real hub.
 - E5. Detection rules (help word, scream, thud + 10 s silence, glass) → Telegram alert with
   room + time. Timestamp log at every hop (captured / hub received / AI done / alert sent).
 - E6. Firestore sync: batched events every 1–5 min, heartbeat every 5 min, alerts immediately.
@@ -335,6 +338,15 @@ Three people, three AI assistants. To avoid redundant or diverging work:
 - Python 3.14 does not run TensorFlow. Pin 3.12 with `uv`.
 - faster-whisper 1.2.1 cannot load audio files with PyAV 19 (`unexpected keyword argument
   'metadata_errors'`). `hub/pyproject.toml` pins `av<17`; keep the pin.
+- Whisper writes spoken Hindi in Devanagari or Urdu script whichever of `hi` / `ur` it is told
+  (a Hindi "बचाओ" came back as "بچاو"), so both help-word lists hold both scripts (D24).
+- Whisper `base` mishears Hindi (मदद → मदख). The English pass often translates other languages
+  ("Upomoć!" → "Help! Help!"), which catches some of those. Compare `small` for Hindi homes in
+  the experiments.
+- Whisper's first download is 141 MB from Hugging Face and took 9 minutes; do it before the demo,
+  never on the hotspot. Afterwards it loads offline in under a second.
+- The hub needs about 0.5 GB of RAM with Whisper. An 8 GB laptop with a browser and an IDE open was
+  already swapping 7 GB, so close other apps on the demo laptop.
 - YAMNet labels real clips loosely: rain scores `Water` 0.98, normal breathing `Gasp` 0.67, a
   creaking door `Crying, sobbing` 0.85, a vacuum cleaner `Jet engine`. `hub/nonna_hub/categories.py`
   says which labels were left out and why; tune its thresholds on our own phone recordings.

@@ -4,7 +4,9 @@ Every source yields 1-second chunks of 16 kHz mono float32 in [-1, 1], the same 
 phone sends (docs/api-contract.md), so files and the laptop mic go through the same path as phones.
 """
 
+import contextlib
 import math
+import queue
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -17,11 +19,22 @@ CHUNK_SAMPLES = SAMPLE_RATE
 
 
 def microphone_chunks() -> Iterator[np.ndarray]:
-    """Yield 1-second chunks from the default microphone until interrupted."""
-    with sounddevice.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32") as stream:
+    """Yield 1-second chunks from the default microphone until interrupted.
+
+    The sound card fills a queue from its own thread, so slow work such as Whisper delays the chunks
+    instead of losing them.
+    """
+    recorded: queue.Queue[np.ndarray] = queue.Queue()
+
+    def on_audio(block: np.ndarray, _frames: int, _time, _status) -> None:
+        recorded.put(block[:, 0].copy())
+
+    with sounddevice.InputStream(
+        samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=CHUNK_SAMPLES, callback=on_audio
+    ):
         while True:
-            chunk, _overflowed = stream.read(CHUNK_SAMPLES)
-            yield chunk[:, 0]
+            with contextlib.suppress(queue.Empty):  # waking every second lets Ctrl+C through on Windows
+                yield recorded.get(timeout=1)
 
 
 def file_chunks(path: Path) -> list[np.ndarray]:

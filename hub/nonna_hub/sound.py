@@ -18,7 +18,8 @@ from nonna_hub.audio import SAMPLE_RATE
 # A versioned URL plus a checksum, so the model cannot change or be swapped under us.
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite"
 MODEL_SHA256 = "4d8b4a53282dc83ef04e3e7dbc4fbc98082e34e44ed798e16c3a0cdd4c584faf"
-MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "yamnet.tflite"
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+MODEL_PATH = MODELS_DIR / "yamnet.tflite"
 
 # Windows overlap by half, so a short bang (under ~0.47 s) always lands whole in one window.
 HOP_SAMPLES = 8_000

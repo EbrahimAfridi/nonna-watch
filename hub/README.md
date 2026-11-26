@@ -24,6 +24,25 @@ door, glass, ... see `nonna_hub/categories.py`), the peak score from 0 to 1, and
 behind it. An event ends after more than a second without its sound. `--raw` shows what YAMNet
 hears before the categories, which helps when tuning them.
 
+## Help words
+
+`listen` and `serve` also write down speech with Whisper and look for help words. Whisper (`base`,
+141 MB) downloads into `hub/models/whisper/` on first use, once; that took 9 minutes on our
+connection. Whisper never guesses the language: it runs once per language the home speaks.
+
+```
+uv run nonna-hub listen --languages it,en,hi
+uv run --env-file .env nonna-hub serve --languages it,en
+```
+
+Codes: `it` Italian, `en` English, `hi` Hindi, `ur` Urdu, `bs` Bosnian; the default is `it,en`.
+Each language adds about half a second per phrase. The words are in `nonna_hub/help_words.py`
+until the family app's settings arrive through Firestore. A help word is reported about 1 to 3 s
+after the person stops speaking.
+
+`listen` prints everything Whisper heard. `serve` prints only phrases with a help word, so the hub
+keeps no running record of what is said at home.
+
 If the microphone only ever shows `Silence`, give your terminal app microphone access:
 
 - macOS: System Settings > Privacy & Security > Microphone

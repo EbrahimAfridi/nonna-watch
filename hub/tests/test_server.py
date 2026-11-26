@@ -3,12 +3,15 @@ from contextlib import contextmanager
 
 import numpy as np
 import pytest
+from fakes import FakeWhisper, loud_parts
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from nonna_hub.help_words import DEFAULT_HELP_WORDS
 from nonna_hub.protocol import encode_frame
 from nonna_hub.server import Hub, create_app
 from nonna_hub.sound import SoundClassifier
+from nonna_hub.speech import SpeechListener
 
 TOKEN = "test-token-0123456789"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -21,7 +24,11 @@ def classifier():
 
 @pytest.fixture
 def client(classifier):
-    with TestClient(create_app(Hub(TOKEN, "test-hub", classifier))) as client:
+    def speech_listener():
+        # Anything loud counts as speech, and Whisper always hears "Aiuto!".
+        return SpeechListener(FakeWhisper({"it": "Aiuto!"}), ["it"], DEFAULT_HELP_WORDS, find_speech=loud_parts)
+
+    with TestClient(create_app(Hub(TOKEN, "test-hub", classifier, speech_listener))) as client:
         yield client
 
 
@@ -117,6 +124,17 @@ def test_phone_audio_becomes_events_under_its_room(client, capsys):
 
     lines = [line for line in capsys.readouterr().out.splitlines() if "Beep, bleep" in line]
     assert lines and lines[0].startswith("bedroom") and " alarm " in lines[0]
+
+
+def test_a_help_word_is_reported_under_its_room(client, capsys):
+    speech = np.full(16_000, 0.5, dtype=np.float32)
+    with phone(client, room="kitchen") as websocket:
+        websocket.send_bytes(frame(0, speech))
+        websocket.send_bytes(frame(1))
+        wait_until_handled(websocket)
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if " HELP " in line]
+    assert len(lines) == 1 and lines[0].startswith("kitchen") and "aiuto" in lines[0]
 
 
 def test_skipped_frames_are_counted(client):

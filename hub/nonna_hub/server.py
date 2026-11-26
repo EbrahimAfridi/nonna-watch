@@ -1,7 +1,7 @@
 """The hub server: listener phones stream audio over a WebSocket, as docs/api-contract.md describes.
 
-Each phone's audio becomes household events (YAMNet, categories, merger), printed with the room.
-Help words (E3) and alerts (E5) build on this.
+Each phone's audio becomes household events (YAMNet) and help words (VAD and Whisper), printed with
+the room. Alerts (E5) build on this.
 """
 
 import asyncio
@@ -9,6 +9,7 @@ import contextlib
 import secrets
 import socket
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib.metadata import version
 
@@ -20,6 +21,7 @@ from pydantic import ValidationError
 from nonna_hub.audio import SAMPLE_RATE, WindowSlicer
 from nonna_hub.categories import Categorizer
 from nonna_hub.events import Event, EventMerger
+from nonna_hub.help_words import DEFAULT_HELP_WORDS
 from nonna_hub.protocol import (
     CLOSE_BAD_HELLO,
     CLOSE_REPLACED,
@@ -35,6 +37,7 @@ from nonna_hub.protocol import (
     parse_message,
 )
 from nonna_hub.sound import HOP_SAMPLES, SoundClassifier
+from nonna_hub.speech import SpeechListener, Transcriber, Utterance
 
 HELLO_TIMEOUT_S = 10
 ASK_TIMEOUT_MS = 20_000  # the contract treats a check as failed after 20 s without ask_played
@@ -50,6 +53,7 @@ class Listener:
     hello: Hello
     slicer: WindowSlicer
     events: EventMerger
+    speech: SpeechListener
     connected_since_ms: int = field(default_factory=now_ms)
     next_seq: int = 0
     last_frame_ms: int | None = None
@@ -69,11 +73,18 @@ class Listener:
 
 
 class Hub:
-    def __init__(self, token: str, hub_id: str, classifier: SoundClassifier):
+    def __init__(
+        self,
+        token: str,
+        hub_id: str,
+        classifier: SoundClassifier,
+        new_speech_listener: Callable[[], SpeechListener],
+    ):
         self._token = token.encode()
         self.hub_id = hub_id
         self.classifier = classifier
         self.categorizer = Categorizer(classifier.labels)
+        self._new_speech_listener = new_speech_listener
         self.listeners: dict[str, Listener] = {}  # by room: one listener per room
         self.started_ms = now_ms()
 
@@ -92,7 +103,13 @@ class Hub:
             if hello is None:
                 return
             await self._replace_older_connections(hello)
-            listener = Listener(websocket, hello, self._new_slicer(), EventMerger(self.classifier.window_ms))
+            listener = Listener(
+                websocket,
+                hello,
+                self._new_slicer(),
+                EventMerger(self.classifier.window_ms),
+                self._new_speech_listener(),
+            )
             self.listeners[hello.room] = listener
             await websocket.send_json(
                 {
@@ -113,6 +130,9 @@ class Hub:
                     await self._handle_frame(listener, message["bytes"])
                 elif message.get("text") is not None:
                     await self._handle_text(listener, message["text"])
+            # A phone that drops right after "aiuto" must still raise the help word.
+            for said in await asyncio.to_thread(listener.speech.flush):
+                print_help(listener.room, said)
         except WebSocketDisconnect:
             pass
         finally:
@@ -185,6 +205,7 @@ class Hub:
             # Frames were skipped, so the audio is no longer continuous: start the windows afresh.
             listener.frames_missing += max(0, seq - listener.next_seq)
             listener.slicer = self._new_slicer()
+            listener.speech.reset()
         listener.next_seq = seq + 1
         listener.frames_received += 1
         listener.last_frame_ms = now_ms()
@@ -195,6 +216,9 @@ class Hub:
             detections = self.categorizer.detect(self.classifier.scores(window))
             for event in listener.events.push(window_ms, detections):
                 print_event(listener.room, event)
+        # Whisper takes about a second, so it runs off the event loop and other rooms keep going.
+        for said in await asyncio.to_thread(listener.speech.push, samples, capture_ms):
+            print_help(listener.room, said)
 
     async def _handle_text(self, listener: Listener, text: str) -> None:
         try:
@@ -256,9 +280,11 @@ def create_app(hub: Hub) -> FastAPI:
     return app
 
 
-def serve(token: str, hub_id: str, port: int) -> None:
-    hub = Hub(token, hub_id, SoundClassifier())
+def serve(token: str, hub_id: str, port: int, languages: list[str]) -> None:
+    transcriber = Transcriber()
+    hub = Hub(token, hub_id, SoundClassifier(), lambda: SpeechListener(transcriber, languages, DEFAULT_HELP_WORDS))
     print(f"Phones connect to ws://{lan_address()}:{port}/ws/listener with HUB_TOKEN from hub/.env")
+    print(f"Listening for help words in: {', '.join(languages)}")
     uvicorn.run(create_app(hub), host="0.0.0.0", port=port)
 
 
@@ -283,6 +309,15 @@ def describe(error: ValueError) -> str:
 
 def print_event(room: str, event: Event) -> None:
     print(f"{room:<12} {clock(event.start_ms)} to {clock(event.end_ms)}   {event.summary()}")
+
+
+def print_help(room: str, said: Utterance) -> None:
+    """Only speech with a help word is shown, so the hub keeps no running record of what is said."""
+    if not said.help_words:
+        return
+    texts = "   ".join(f"[{language}] {text}" for language, text in said.texts.items())
+    when = f"{clock(said.start_ms)} to {clock(said.end_ms)}"
+    print(f"{room:<12} {when}   HELP         {', '.join(said.help_words)}   {texts}")
 
 
 def clock(epoch_ms: int) -> str:
