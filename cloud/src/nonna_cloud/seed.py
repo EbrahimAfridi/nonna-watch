@@ -146,8 +146,16 @@ def generate(days: int, tz_name: str = "Europe/Rome", today: date | None = None,
     today = today or datetime.now(tz).date()
     rng = random.Random(seed)
     out: list[dict] = []
+    seen: set[str] = set()
     for i in range(days, 0, -1):
-        out.extend(generate_day(today - timedelta(days=i), tz, rng))
+        for e in generate_day(today - timedelta(days=i), tz, rng):
+            # Two random events can land on the same device in the same second, which would give
+            # them the same document id, and one would overwrite the other. Nudge by a second.
+            while event_id(e) in seen:
+                e["start"] += timedelta(seconds=1)
+                e["end"] = max(e["end"], e["start"])
+            seen.add(event_id(e))
+            out.append(e)
     return out
 
 

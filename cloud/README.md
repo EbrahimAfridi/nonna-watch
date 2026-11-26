@@ -70,7 +70,7 @@ everything when you stop it (Ctrl+C).
 
 Free Spark plan, so no card is needed. Do it with the Google account the team will share.
 
-1. **Create the project.** Go to https://console.firebase.google.com → *Create a project* → name it
+1. **Create the project.** (Done: project ID **`nonna-watch-team`**, Firestore in `europe-west8`, Spark plan.) Go to https://console.firebase.google.com → *Create a project* → name it
    `nonna-watch`. Turn **Google Analytics off** (we don't need it). Write down the **project ID** that is
    shown, e.g. `nonna-watch-1a2b3`.
 2. **Firestore.** *Build → Firestore Database → Create database*.
@@ -95,7 +95,7 @@ Free Spark plan, so no card is needed. Do it with the Google account the team wi
 7. **Upload our rules and indexes** (from `cloud/`):
    ```powershell
    npx firebase login
-   npx firebase deploy --only firestore:rules,firestore:indexes --project YOUR-PROJECT-ID
+   npx firebase deploy --only firestore:rules,firestore:indexes --project live
    ```
 8. **Add the team.** *Project settings → Users and permissions → Add member*: Ebrahim and A as **Editor**.
 9. **Check it end to end** with the real project:

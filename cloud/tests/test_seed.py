@@ -38,8 +38,10 @@ def test_events_follow_the_schema():
 
 
 def test_ids_are_unique_so_nothing_is_overwritten():
-    events = generate(14, today=TODAY)
-    assert len({event_id(e) for e in events}) == len(events)
+    # Checked for every start date in a year: one date once produced two events in the same second.
+    for offset in range(365):
+        events = generate(14, today=TODAY + timedelta(days=offset))
+        assert len({event_id(e) for e in events}) == len(events), TODAY + timedelta(days=offset)
 
 
 def test_size_stays_far_inside_the_free_write_quota():
