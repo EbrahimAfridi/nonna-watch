@@ -12,6 +12,7 @@ dependencies = [
     "faster-whisper>=1.2.1",
     "numpy",
     "sounddevice>=0.5",
+    "starlette>=1.10.0",
     "uvicorn>=0.54.0",
     "websockets>=17.4",
 ]

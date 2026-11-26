@@ -351,6 +351,9 @@ Three people, three AI assistants. To avoid redundant or diverging work:
   "BAJAU" depending on a few milliseconds of silence around it, and मदद as "मदख". Italian, English
   and Bosnian were reliable. The English pass often translates other languages ("Upomoć!" →
   "Help! Help!"), which catches some. Compare `small` for Hindi homes in the experiments.
+- Help words also match ordinary sentences ("grazie per l'aiuto", "can I help you?"), from people
+  or the TV. The 10-minute TV test (section 9) decides whether we add a rule such as "short phrases
+  only", which would also miss "help, I fell and can't get up".
 - Whisper's default retries unsure phrases at a higher temperature, which samples at random, so the
   same audio gave different words on each run. The hub uses beam search at temperature 0: the same
   audio always gives the same words.

@@ -15,6 +15,11 @@ COOLDOWN_MS = 60_000  # at most one alert of each kind per room per minute, howe
 CHECK_FIRST = ("thud", "glass")  # ask "Are you okay?" first; alert only without a reassuring answer
 CHECK_AFTER = ("help_word", "scream", "distress")  # alert at once, then ask; "fine" sends a follow-up
 
+# Sounds that happen once rather than going on. After a reassuring answer the next one is a new
+# incident and alerts again; screaming, crying or a smoke alarm can last minutes and stay limited
+# to once a minute, or a TV scene would alert after every check.
+ONE_OFF_KINDS = ("help_word", "thud", "glass")
+
 CHECK_OUTCOMES = {
     "help": "Asked for help when checked.",
     "no_answer": "No answer to the check-in question.",
@@ -85,6 +90,11 @@ class RoomRules:
         if not said.help_words:
             return []
         return self._alert("help_word", said.end_ms, ", ".join(said.help_words))
+
+    def reassured(self, kind: str) -> None:
+        """The voice check started by an alert of this kind got a reassuring answer."""
+        if kind in ONE_OFF_KINDS:
+            self._last_alert_ms.pop(kind, None)
 
     def _alert(self, kind: str, at_ms: int, detail: str = "") -> list[Alert]:
         last_ms = self._last_alert_ms.get(kind)

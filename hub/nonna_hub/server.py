@@ -18,6 +18,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError
+from starlette.websockets import WebSocketDisconnected
 
 from nonna_hub.audio import SAMPLE_RATE, WindowSlicer
 from nonna_hub.categories import Categorizer
@@ -44,6 +45,10 @@ from nonna_hub.telegram import Telegram, TelegramError
 from nonna_hub.voice_check import ANSWER_WAIT_S, ASK_PLAYED_TIMEOUT_S, QUESTIONS, VoiceCheck, is_question
 
 HELLO_TIMEOUT_S = 10
+
+# The phone hung up, or the hub itself closed that connection because a newer one replaced it
+# (Starlette raises WebSocketDisconnected for a socket the app already closed).
+PHONE_GONE = (WebSocketDisconnect, WebSocketDisconnected)
 
 
 @dataclass
@@ -123,18 +128,21 @@ class Hub:
             )
             phone = hello.device_model or "unknown phone"
             print(f"{hello.room:<12} connected: {phone}, app {hello.app_version or '?'}")
-            while True:
-                message = await websocket.receive()
-                if message["type"] == "websocket.disconnect":
-                    break
-                if message.get("bytes") is not None:
-                    await self._handle_frame(listener, message["bytes"])
-                elif message.get("text") is not None:
-                    await self._handle_text(listener, message["text"])
+            try:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        break
+                    if message.get("bytes") is not None:
+                        await self._handle_frame(listener, message["bytes"])
+                    elif message.get("text") is not None:
+                        await self._handle_text(listener, message["text"])
+            except PHONE_GONE:
+                pass  # gone in the middle of a reply; what it said last is written down below
             # A phone that drops right after "aiuto" must still raise the help word.
             for said in await asyncio.to_thread(listener.speech.flush):
                 await self._on_speech(listener, said)
-        except WebSocketDisconnect:
+        except PHONE_GONE:
             pass
         finally:
             if listener:
@@ -152,7 +160,7 @@ class Hub:
         try:
             ask = {"type": "ask", "ask_id": check.ask_id, "reason": check.reason, "text": text, "lang": lang}
             await listener.websocket.send_json(ask)
-        except WebSocketDisconnect:
+        except PHONE_GONE:
             listener.voice_check = None
             raise
         print(f"{listener.room:<12} asked: {text}")
@@ -197,7 +205,7 @@ class Hub:
             if older.room == hello.room or older.hello.device_id == hello.device_id:
                 del self.listeners[older.room]
                 print(f"{older.room:<12} replaced by a newer connection")
-                with contextlib.suppress(WebSocketDisconnect):
+                with contextlib.suppress(*PHONE_GONE):
                     await older.websocket.close(CLOSE_REPLACED, "replaced by a newer connection")
 
     async def _handle_frame(self, listener: Listener, frame: bytes) -> None:
@@ -239,18 +247,21 @@ class Hub:
 
     async def _act_on(self, listener: Listener, alerts: list[Alert]) -> None:
         """Send each alert, with the voice check first or after it (CONTEXT.md section 4)."""
+        # Ask through the room's current phone: audio left over from a replaced connection can still
+        # raise an alert, but only the connection that replaced it can play the question.
+        asker = self.listeners.get(listener.room, listener)
         for alert in alerts:
-            if alert.kind in CHECK_FIRST and listener.voice_check is None:
+            if alert.kind in CHECK_FIRST and asker.voice_check is None:
                 try:
-                    await self.start_voice_check(listener, alert)
-                except WebSocketDisconnect:
+                    await self.start_voice_check(asker, alert)
+                except PHONE_GONE:
                     self._raise_alert(listener, replace(alert, check_outcome="not_played"))
                 continue
             # Also reached by a thud or glass while a check is already running: alert straight away.
             self._raise_alert(listener, alert)
-            if alert.kind in CHECK_AFTER and listener.voice_check is None:
-                with contextlib.suppress(WebSocketDisconnect):
-                    await self.start_voice_check(listener, alert, alert_sent=True)
+            if alert.kind in CHECK_AFTER and asker.voice_check is None:
+                with contextlib.suppress(*PHONE_GONE):
+                    await self.start_voice_check(asker, alert, alert_sent=True)
 
     async def _finish_voice_check(self, listener: Listener, check: VoiceCheck) -> None:
         try:
@@ -265,6 +276,9 @@ class Hub:
             if listener.voice_check is check:
                 listener.voice_check = None
         print(f"{listener.room:<12} {clock(now_ms())}   CHECK        {check.reason}: {outcome} {detail}".rstrip())
+        if outcome == "fine" and check.alert:
+            # Otherwise a real fall or "aiuto" within a minute of "sto bene" would be swallowed.
+            listener.rules.reassured(check.alert.kind)
 
         if check.alert is None:
             return  # asked for through POST /ask: the line above is the whole result
@@ -362,7 +376,7 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(status.HTTP_409_CONFLICT, f"a voice check is already running in {room}")
         try:
             return {"ask_id": await hub.start_voice_check(listener)}
-        except WebSocketDisconnect:
+        except PHONE_GONE:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"the {room} listener just left") from None
 
     @app.websocket("/ws/listener")

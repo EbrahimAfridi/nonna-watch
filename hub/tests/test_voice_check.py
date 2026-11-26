@@ -36,6 +36,10 @@ def test_a_negation_is_never_a_reassuring_answer():
     assert answer(said(0, 1, hi="ठीक नहीं हूँ")) is None
 
 
+def test_the_italian_t_apostrophe_is_not_a_negation():
+    assert answer(said(0, 1, it="Sto bene, t'ho detto!")) == ("fine", "sto bene")
+
+
 def test_a_help_word_beats_a_fine_word():
     assert answer(said(0, 1, help_words=["aiuto"], it="Bene... no, aiuto!")) == ("help", "aiuto")
 

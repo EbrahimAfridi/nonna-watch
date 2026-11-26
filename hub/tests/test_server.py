@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 import numpy as np
 import pytest
-from fakes import FakeWhisper, ScriptedWhisper, ThudInFirstWindow, loud_parts
+from fakes import FakeWhisper, ScriptedWhisper, ThudInWindows, loud_parts
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -283,7 +283,7 @@ def test_a_thud_without_an_answer_alerts(classifier, monkeypatch):
     monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.2)
     sent = []
     start = now_ms()
-    with hub_hearing(classifier, ScriptedWhisper(), sent, ThudInFirstWindow()) as client, phone(client) as websocket:
+    with hub_hearing(classifier, ScriptedWhisper(), sent, ThudInWindows(1)) as client, phone(client) as websocket:
         ask = thud_then_ask(websocket, start)
         assert sent == []
         played(websocket, ask, start, ended_after_s=10.5)
@@ -296,7 +296,7 @@ def test_a_thud_answered_sto_bene_does_not_alert(classifier, monkeypatch, capsys
     monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.5)
     sent = []
     start = now_ms()
-    with hub_hearing(classifier, ScriptedWhisper("Sto bene"), sent, ThudInFirstWindow()) as client:
+    with hub_hearing(classifier, ScriptedWhisper("Sto bene"), sent, ThudInWindows(1)) as client:
         with phone(client) as websocket:
             ask = thud_then_ask(websocket, start)
             played(websocket, ask, start, ended_after_s=10.5)
@@ -307,11 +307,25 @@ def test_a_thud_answered_sto_bene_does_not_alert(classifier, monkeypatch, capsys
     assert sent == []
 
 
+def test_after_a_reassuring_answer_the_next_thud_is_checked_again(classifier, monkeypatch):
+    monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.5)
+    start = now_ms()
+    # A thud in the first window, the answer "sto bene", then another thud 12.5 s in.
+    thuds = ThudInWindows(1, 26)
+    with hub_hearing(classifier, ScriptedWhisper("Sto bene"), [], thuds) as client, phone(client) as websocket:
+        first = thud_then_ask(websocket, start)
+        played(websocket, first, start, ended_after_s=10.5)
+        stream(websocket, start, [0.5, 0], first_seq=11)
+        asks = stream(websocket, start, [0] * 11, first_seq=13)
+
+    assert [ask["reason"] for ask in asks] == ["thud"]
+
+
 def test_a_thud_alerts_when_the_phone_cannot_ask(classifier, monkeypatch):
     monkeypatch.setattr(server, "ASK_PLAYED_TIMEOUT_S", 0.2)
     sent = []
     start = now_ms()
-    with hub_hearing(classifier, ScriptedWhisper(), sent, ThudInFirstWindow()) as client, phone(client) as websocket:
+    with hub_hearing(classifier, ScriptedWhisper(), sent, ThudInWindows(1)) as client, phone(client) as websocket:
         thud_then_ask(websocket, start)
         eventually(lambda: sent)
 

@@ -26,10 +26,11 @@ ARABIC_VOWEL_MARKS = re.compile("[\u064b-\u065f\u0670]")
 def words(text: str) -> list[str]:
     """Lower-case words without surrounding punctuation.
 
-    Splits on spaces rather than with \\w, which would cut Hindi words apart at their vowel signs.
+    Splits at spaces and apostrophes, so the Italian "d'aiuto" contains "aiuto". Not with \\w, which
+    would cut Hindi words apart at their vowel signs.
     """
     found = []
-    for token in unicodedata.normalize("NFKC", text).casefold().split():
+    for token in re.split(r"[\s'’]+", unicodedata.normalize("NFKC", text).casefold()):
         punctuation = "".join(char for char in token if unicodedata.category(char).startswith("P"))
         word = ARABIC_VOWEL_MARKS.sub("", token.strip(punctuation))
         word = re.sub(r"(.)\1{2,}", r"\1", word)  # shouts get stretched: "aiutooo"

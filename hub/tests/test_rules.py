@@ -38,6 +38,23 @@ def test_the_same_kind_alerts_once_a_minute():
     assert [alert.at_ms for alert in alerts] == [0, 60_000]
 
 
+def test_after_a_reassuring_answer_the_next_help_word_alerts_again():
+    rules = RoomRules()
+    rules.on_speech(said("aiuto", end_ms=0))
+    rules.reassured("help_word")
+
+    assert [alert.at_ms for alert in rules.on_speech(said("aiuto", end_ms=30_000))] == [30_000]
+
+
+def test_a_scream_that_goes_on_stays_once_a_minute_even_after_a_reassuring_answer():
+    rules = RoomRules()
+    alerts = run_windows(rules, [heard("scream")] * 4)
+    rules.reassured("scream")
+    alerts += run_windows(rules, [heard("scream")] * 4, start_ms=2_000)
+
+    assert alerts == [Alert("scream", 0)]
+
+
 def test_a_long_scream_alerts_once():
     alerts = run_windows(RoomRules(), [heard("scream")] * 10)
 

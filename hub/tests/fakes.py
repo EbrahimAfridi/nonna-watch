@@ -32,12 +32,13 @@ class ScriptedWhisper:
         return self.lines.pop(0) if self.lines else ""
 
 
-class ThudInFirstWindow:
-    """Stand-in for the categorizer: a thud in the first window, nothing after it."""
+class ThudInWindows:
+    """Stand-in for the categorizer: a thud in the given windows, counted from 1, and nothing else."""
 
-    def __init__(self):
+    def __init__(self, *thud_windows):
+        self.thud_windows = set(thud_windows)
         self.windows = 0
 
     def detect(self, scores):
         self.windows += 1
-        return [Detection("thud", 0.9, "Thump, thud")] if self.windows == 1 else []
+        return [Detection("thud", 0.9, "Thump, thud")] if self.windows in self.thud_windows else []

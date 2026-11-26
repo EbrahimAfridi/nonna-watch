@@ -5,6 +5,11 @@ def test_case_punctuation_and_stretched_shouts_do_not_matter():
     assert find_phrases("AIUTO!! Aiutooo...", DEFAULT_HELP_WORDS["it"]) == ["aiuto"]
 
 
+def test_italian_elisions_still_match():
+    assert find_phrases("Ho bisogno d'aiuto", DEFAULT_HELP_WORDS["it"]) == ["aiuto"]
+    assert find_phrases("Chiamate l’aiuto!", DEFAULT_HELP_WORDS["it"]) == ["aiuto"]
+
+
 def test_only_whole_words_match():
     assert find_phrases("That was really helpful, thanks.", DEFAULT_HELP_WORDS["en"]) == []
 
