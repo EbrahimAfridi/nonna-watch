@@ -1,0 +1,43 @@
+# Shared via WhatsApp, not git (see CONTEXT.md section 12)
+DECISIONS.md
+
+# Secrets
+.env
+.env.*
+*.key
+*-service-account*.json
+google-services.json
+serviceAccountKey.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Models and audio test data (large, downloaded or shared separately)
+hub/models/
+experiments/data/
+*.wav
+*.mp3
+*.m4a
+
+# Android
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+*.iml
+
+# Terraform
+cloud/terraform/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+
+# OS / editors
+.DS_Store
+.vscode/
