@@ -45,8 +45,16 @@ class Transcriber:
         )
 
     def __call__(self, audio: np.ndarray, language: str) -> str:
+        # Whisper's default retries unsure phrases at a higher temperature, which samples at random: one
+        # Hindi clip came back three different ways. Temperature 0 gives the same words for the same
+        # audio every time, and beam search keeps it accurate for about 0.05 s more.
         segments, _info = self._model.transcribe(
-            audio, language=language, beam_size=1, condition_on_previous_text=False, without_timestamps=True
+            audio,
+            language=language,
+            beam_size=5,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            without_timestamps=True,
         )
         return " ".join(segment.text.strip() for segment in segments)
 

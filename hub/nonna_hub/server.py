@@ -1,7 +1,7 @@
 """The hub server: listener phones stream audio over a WebSocket, as docs/api-contract.md describes.
 
 Each phone's audio becomes household events (YAMNet) and help words (VAD and Whisper), printed with
-the room. Alerts (E5) build on this.
+the room. The detection rules turn them into alerts, which go to the family's Telegram group.
 """
 
 import asyncio
@@ -36,8 +36,10 @@ from nonna_hub.protocol import (
     parse_frame,
     parse_message,
 )
+from nonna_hub.rules import Alert, RoomRules
 from nonna_hub.sound import HOP_SAMPLES, SoundClassifier
 from nonna_hub.speech import SpeechListener, Transcriber, Utterance
+from nonna_hub.telegram import Telegram, TelegramError
 
 HELLO_TIMEOUT_S = 10
 ASK_TIMEOUT_MS = 20_000  # the contract treats a check as failed after 20 s without ask_played
@@ -54,6 +56,7 @@ class Listener:
     slicer: WindowSlicer
     events: EventMerger
     speech: SpeechListener
+    rules: RoomRules = field(default_factory=RoomRules)
     connected_since_ms: int = field(default_factory=now_ms)
     next_seq: int = 0
     last_frame_ms: int | None = None
@@ -79,12 +82,15 @@ class Hub:
         hub_id: str,
         classifier: SoundClassifier,
         new_speech_listener: Callable[[], SpeechListener],
+        send_alert: Callable[[str], None] | None = None,
     ):
         self._token = token.encode()
         self.hub_id = hub_id
         self.classifier = classifier
         self.categorizer = Categorizer(classifier.labels)
         self._new_speech_listener = new_speech_listener
+        self._send_alert = send_alert
+        self._sending: set[asyncio.Task] = set()  # held so pending sends are not garbage-collected
         self.listeners: dict[str, Listener] = {}  # by room: one listener per room
         self.started_ms = now_ms()
 
@@ -133,6 +139,7 @@ class Hub:
             # A phone that drops right after "aiuto" must still raise the help word.
             for said in await asyncio.to_thread(listener.speech.flush):
                 print_help(listener.room, said)
+                self._raise_alerts(listener, listener.rules.on_speech(said))
         except WebSocketDisconnect:
             pass
         finally:
@@ -210,15 +217,41 @@ class Hub:
         listener.frames_received += 1
         listener.last_frame_ms = now_ms()
 
+        alerts = []
         frame_start = listener.slicer.samples_pushed
         for start, window in listener.slicer.push(samples):
             window_ms = capture_ms + (start - frame_start) * 1000 // SAMPLE_RATE
             detections = self.categorizer.detect(self.classifier.scores(window))
             for event in listener.events.push(window_ms, detections):
                 print_event(listener.room, event)
+            alerts += listener.rules.on_window(window_ms, detections)
+        self._raise_alerts(listener, alerts)
         # Whisper takes about a second, so it runs off the event loop and other rooms keep going.
         for said in await asyncio.to_thread(listener.speech.push, samples, capture_ms):
             print_help(listener.room, said)
+            self._raise_alerts(listener, listener.rules.on_speech(said))
+
+    def _raise_alerts(self, listener: Listener, alerts: list[Alert]) -> None:
+        """Print each alert with how long it took to get here, then send it without waiting."""
+        for alert in alerts:
+            received_s = (listener.last_frame_ms - alert.at_ms) / 1000
+            detected_s = (now_ms() - alert.at_ms) / 1000
+            what = f"{alert.kind} {alert.detail}".strip()
+            timing = f"received +{received_s:.1f} s, detected +{detected_s:.1f} s"
+            print(f"{listener.room:<12} {clock(alert.at_ms)}   ALERT        {what}   {timing}")
+            if self._send_alert:
+                task = asyncio.create_task(self._send(listener.room, alert))
+                self._sending.add(task)
+                task.add_done_callback(self._sending.discard)
+
+    async def _send(self, room: str, alert: Alert) -> None:
+        try:
+            await asyncio.to_thread(self._send_alert, alert.message(room))
+        except (OSError, TelegramError) as error:
+            print(f"{room:<12} {clock(alert.at_ms)}   NOT SENT     {error}")
+            return
+        sent_s = (now_ms() - alert.at_ms) / 1000
+        print(f"{room:<12} {clock(alert.at_ms)}   SENT         +{sent_s:.1f} s after the sound")
 
     async def _handle_text(self, listener: Listener, text: str) -> None:
         try:
@@ -280,11 +313,21 @@ def create_app(hub: Hub) -> FastAPI:
     return app
 
 
-def serve(token: str, hub_id: str, port: int, languages: list[str]) -> None:
+def serve(token: str, hub_id: str, port: int, languages: list[str], telegram: Telegram | None) -> None:
     transcriber = Transcriber()
-    hub = Hub(token, hub_id, SoundClassifier(), lambda: SpeechListener(transcriber, languages, DEFAULT_HELP_WORDS))
+    hub = Hub(
+        token,
+        hub_id,
+        SoundClassifier(),
+        lambda: SpeechListener(transcriber, languages, DEFAULT_HELP_WORDS),
+        send_alert=telegram.send if telegram else None,
+    )
     print(f"Phones connect to ws://{lan_address()}:{port}/ws/listener with HUB_TOKEN from hub/.env")
     print(f"Listening for help words in: {', '.join(languages)}")
+    if telegram:
+        print("Alerts go to the Telegram group in TELEGRAM_CHAT_ID")
+    else:
+        print("Telegram is not set up, so alerts only appear here (see hub/README.md)")
     uvicorn.run(create_app(hub), host="0.0.0.0", port=port)
 
 

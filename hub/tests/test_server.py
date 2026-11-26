@@ -1,3 +1,4 @@
+import time
 import uuid
 from contextlib import contextmanager
 
@@ -23,12 +24,18 @@ def classifier():
 
 
 @pytest.fixture
-def client(classifier):
+def sent_alerts():
+    return []
+
+
+@pytest.fixture
+def client(classifier, sent_alerts):
     def speech_listener():
         # Anything loud counts as speech, and Whisper always hears "Aiuto!".
         return SpeechListener(FakeWhisper({"it": "Aiuto!"}), ["it"], DEFAULT_HELP_WORDS, find_speech=loud_parts)
 
-    with TestClient(create_app(Hub(TOKEN, "test-hub", classifier, speech_listener))) as client:
+    hub = Hub(TOKEN, "test-hub", classifier, speech_listener, send_alert=sent_alerts.append)
+    with TestClient(create_app(hub)) as client:
         yield client
 
 
@@ -60,6 +67,14 @@ def wait_until_handled(websocket):
 
 def devices(client):
     return client.get("/devices", headers=AUTH).json()
+
+
+def eventually(condition, timeout_s=2):
+    """Wait for something the hub does in the background, such as sending an alert."""
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
 
 
 def test_wrong_token_is_refused(client):
@@ -126,15 +141,20 @@ def test_phone_audio_becomes_events_under_its_room(client, capsys):
     assert lines and lines[0].startswith("bedroom") and " alarm " in lines[0]
 
 
-def test_a_help_word_is_reported_under_its_room(client, capsys):
+def test_a_help_word_is_reported_and_sent_to_the_family(client, sent_alerts, capsys):
     speech = np.full(16_000, 0.5, dtype=np.float32)
     with phone(client, room="kitchen") as websocket:
         websocket.send_bytes(frame(0, speech))
         websocket.send_bytes(frame(1))
         wait_until_handled(websocket)
+        eventually(lambda: sent_alerts)
 
-    lines = [line for line in capsys.readouterr().out.splitlines() if " HELP " in line]
-    assert len(lines) == 1 and lines[0].startswith("kitchen") and "aiuto" in lines[0]
+    output = capsys.readouterr().out.splitlines()
+    help_lines = [line for line in output if " HELP " in line]
+    alert_lines = [line for line in output if " ALERT " in line]
+    assert len(help_lines) == 1 and help_lines[0].startswith("kitchen") and "aiuto" in help_lines[0]
+    assert len(alert_lines) == 1 and "help_word aiuto" in alert_lines[0]
+    assert len(sent_alerts) == 1 and 'Help word "aiuto" heard in the kitchen' in sent_alerts[0]
 
 
 def test_skipped_frames_are_counted(client):

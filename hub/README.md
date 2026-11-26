@@ -79,6 +79,30 @@ uv run --env-file .env nonna-hub fake-phone --room bedroom
 To try `/devices` and `/ask` from a browser, open http://localhost:8000/docs, click Authorize and
 paste the token from `.env`.
 
+## Alerts and Telegram
+
+The rules in `nonna_hub/rules.py` raise an alert at once for a help word, screaming, crying or
+moaning, glass breaking and a smoke alarm, and for a thud followed by 10 s without any sound of
+movement. Each kind alerts at most once per room per minute. `serve` prints every alert with its
+timing, which Experiment 1 uses:
+
+```
+kitchen      23:16:22.5   ALERT        help_word aiuto   received +0.6 s, detected +2.8 s
+kitchen      23:16:22.5   SENT         +3.4 s after the sound
+```
+
+`serve` also sends alerts to the family's Telegram group. `listen` only prints them, so testing
+with files never reaches the family. To set Telegram up once:
+
+1. In Telegram, message @BotFather, send `/newbot` and follow the steps. It gives you a bot token.
+2. Add the bot to the family group and send `/start` in the group.
+3. Add `TELEGRAM_BOT_TOKEN=<the token>` to `hub/.env`. Share the token privately, never in git.
+4. Run `uv run --env-file .env nonna-hub telegram-test`. It lists the chats the bot has seen; add
+   the group's id (it starts with `-`) as `TELEGRAM_CHAT_ID=<id>` to `hub/.env`.
+5. Run `telegram-test` again: a test message should appear in the group.
+
+Without these two settings the hub still runs, and alerts only appear in its console.
+
 ## Test
 
 ```

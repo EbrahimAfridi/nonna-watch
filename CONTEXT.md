@@ -180,6 +180,9 @@ only hard rule is that a milestone is not "done" until the test for it passes on
   phone, so A can test against a real hub.
 - E5. Detection rules (help word, scream, thud + 10 s silence, glass) → Telegram alert with
   room + time. Timestamp log at every hop (captured / hub received / AI done / alert sent).
+  Done: `rules.py` (plus crying and smoke alarm from the table in section 4) and `telegram.py`;
+  `serve` prints each alert with its hops and sends it to Telegram; `telegram-test` checks the
+  bot and finds the group's chat id. Thud and glass alert directly until E7 asks first (D26).
 - E6. Firestore sync: batched events every 1–5 min, heartbeat every 5 min, alerts immediately.
   Offline queue: if internet drops, keep working and flush later.
 - E7. Voice check hub side: send `ask` to the phone, listen 30 s for "fine"-words or help words,
@@ -340,9 +343,13 @@ Three people, three AI assistants. To avoid redundant or diverging work:
   'metadata_errors'`). `hub/pyproject.toml` pins `av<17`; keep the pin.
 - Whisper writes spoken Hindi in Devanagari or Urdu script whichever of `hi` / `ur` it is told
   (a Hindi "बचाओ" came back as "بچاو"), so both help-word lists hold both scripts (D24).
-- Whisper `base` mishears Hindi (मदद → मदख). The English pass often translates other languages
-  ("Upomoć!" → "Help! Help!"), which catches some of those. Compare `small` for Hindi homes in
-  the experiments.
+- Whisper `base` is unreliable for Hindi: the same "बचाओ" clip came back as "بچاو", "بَجَو" or
+  "BAJAU" depending on a few milliseconds of silence around it, and मदद as "मदख". Italian, English
+  and Bosnian were reliable. The English pass often translates other languages ("Upomoć!" →
+  "Help! Help!"), which catches some. Compare `small` for Hindi homes in the experiments.
+- Whisper's default retries unsure phrases at a higher temperature, which samples at random, so the
+  same audio gave different words on each run. The hub uses beam search at temperature 0: the same
+  audio always gives the same words.
 - Whisper's first download is 141 MB from Hugging Face and took 9 minutes; do it before the demo,
   never on the hotspot. Afterwards it loads offline in under a second.
 - The hub needs about 0.5 GB of RAM with Whisper. An 8 GB laptop with a browser and an IDE open was

@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 # Spoken Hindi and Urdu are one language, and Whisper writes it in Devanagari or Arabic script
 # whichever of the two it is told (a Hindi "बचाओ" came back as "بچاو"), so both get both scripts.
-HINDI_URDU_HELP_WORDS = ("बचाओ", "بچاؤ", "بچاو", "bachao", "मदद", "مدد", "madad")
+HINDI_URDU_HELP_WORDS = ("बचाओ", "بچاؤ", "بچاو", "bachao", "मदद", "مدد", "madad", "madat")
 
 # Until E8 reads the home's helpWords from Firestore. Whisper may also drop the Bosnian ć or split
 # "upomoć" into "u pomoć", hence the variants.
@@ -19,6 +19,9 @@ DEFAULT_HELP_WORDS = {
 }
 LANGUAGES = tuple(DEFAULT_HELP_WORDS)
 
+# Short-vowel marks that Urdu normally leaves out but Whisper sometimes writes, as in "بَجَو".
+ARABIC_VOWEL_MARKS = re.compile("[\u064b-\u065f\u0670]")
+
 
 def words(text: str) -> list[str]:
     """Lower-case words without surrounding punctuation.
@@ -28,7 +31,8 @@ def words(text: str) -> list[str]:
     found = []
     for token in unicodedata.normalize("NFKC", text).casefold().split():
         punctuation = "".join(char for char in token if unicodedata.category(char).startswith("P"))
-        word = re.sub(r"(.)\1{2,}", r"\1", token.strip(punctuation))  # shouts get stretched: "aiutooo"
+        word = ARABIC_VOWEL_MARKS.sub("", token.strip(punctuation))
+        word = re.sub(r"(.)\1{2,}", r"\1", word)  # shouts get stretched: "aiutooo"
         if word:
             found.append(word)
     return found

@@ -27,6 +27,10 @@ def test_hindi_matches_when_whisper_writes_it_in_urdu_script():
     assert find_help_words("بچاو, بچاو", DEFAULT_HELP_WORDS["hi"]) == ["بچاو"]
 
 
+def test_urdu_matches_when_whisper_adds_vowel_marks():
+    assert find_help_words("بَچاؤ!", DEFAULT_HELP_WORDS["ur"]) == ["بچاؤ"]
+
+
 def test_a_phrase_matches_only_as_a_whole():
     assert find_help_words("ok, I'm fine now", ["i'm fine"]) == ["i'm fine"]
     assert find_help_words("I'm not fine", ["i'm fine"]) == []

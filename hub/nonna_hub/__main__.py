@@ -15,8 +15,10 @@ from nonna_hub.categories import Categorizer
 from nonna_hub.events import Event, EventMerger
 from nonna_hub.help_words import DEFAULT_HELP_WORDS, LANGUAGES
 from nonna_hub.protocol import ROOMS
+from nonna_hub.rules import Alert, RoomRules
 from nonna_hub.sound import HOP_SAMPLES, SoundClassifier
 from nonna_hub.speech import SpeechListener, Transcriber, Utterance
+from nonna_hub.telegram import Telegram, TelegramError
 
 LABELS_PER_LINE = 3
 MIN_TOKEN_LENGTH = 16
@@ -41,13 +43,17 @@ def main() -> None:
     phone.add_argument("--hub", default="ws://localhost:8000/ws/listener", help="default: %(default)s")
     phone.add_argument("files", nargs="*", type=Path, help="audio files to stream instead of the microphone")
 
+    commands.add_parser("telegram-test", help="send a test message to the family's Telegram group")
+
     args = parser.parse_args()
     if args.command == "listen":
         listen_to(args.files, args.raw, args.languages)
     elif args.command == "serve":
-        server.serve(hub_token(), os.environ.get("HUB_ID", "hub"), args.port, args.languages)
-    else:
+        server.serve(hub_token(), os.environ.get("HUB_ID", "hub"), args.port, args.languages, telegram_from_env())
+    elif args.command == "fake-phone":
         fake_phone.run(args.hub, hub_token(), args.room, args.files)
+    else:
+        telegram_test()
 
 
 def language_list(text: str) -> list[str]:
@@ -80,22 +86,31 @@ def listen_to(files: list[Path], raw: bool, languages: list[str]) -> None:
 
 
 def print_events(classifier: SoundClassifier, speech: SpeechListener, chunks: Iterable[np.ndarray]) -> None:
+    """Events, speech and alerts, as the hub would see them. Alerts are only printed, never sent."""
     slicer = WindowSlicer(window=classifier.window_samples, hop=HOP_SAMPLES)
     categorizer = Categorizer(classifier.labels)
     merger = EventMerger(classifier.window_ms)
+    rules = RoomRules()
     try:
         for second, chunk in enumerate(chunks):
             for start, window in slicer.push(chunk):
+                window_ms = start * 1000 // SAMPLE_RATE
                 detections = categorizer.detect(classifier.scores(window))
-                for event in merger.push(start * 1000 // SAMPLE_RATE, detections):
+                for event in merger.push(window_ms, detections):
                     print_event(event)
+                for alert in rules.on_window(window_ms, detections):
+                    print_alert(alert)
             for said in speech.push(chunk, second * 1000):
                 print_utterance(said)
+                for alert in rules.on_speech(said):
+                    print_alert(alert)
     finally:
         for event in merger.close_all():
             print_event(event)
         for said in speech.flush():
             print_utterance(said)
+            for alert in rules.on_speech(said):
+                print_alert(alert)
 
 
 def print_event(event: Event) -> None:
@@ -109,6 +124,10 @@ def print_utterance(said: Utterance) -> None:
         print(f"{seconds(said.start_ms, said.end_ms)}   {'HELP':<12} {', '.join(said.help_words)}")
 
 
+def print_alert(alert: Alert) -> None:
+    print(f"{alert.at_ms / 1000:7.1f} s            {'ALERT':<12} {alert.kind} {alert.detail}".rstrip())
+
+
 def seconds(start_ms: int, end_ms: int) -> str:
     return f"{start_ms / 1000:7.1f} to {end_ms / 1000:5.1f} s"
 
@@ -120,6 +139,31 @@ def print_labels(classifier: SoundClassifier, chunks: Iterable[np.ndarray]) -> N
             top = classifier.top_labels(classifier.scores(window), LABELS_PER_LINE)
             labels = "   ".join(f"{label} {score:.2f}" for label, score in top)
             print(f"{start / SAMPLE_RATE:7.1f} s   {labels}")
+
+
+def telegram_from_env() -> Telegram | None:
+    token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", "")
+    return Telegram(token, chat_id) if token and chat_id else None
+
+
+def telegram_test() -> None:
+    token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token:
+        sys.exit("Set TELEGRAM_BOT_TOKEN in hub/.env first (hub/README.md, Telegram alerts).")
+    telegram = Telegram(token, chat_id)
+    try:
+        if chat_id:
+            telegram.send("Nonna Watch: test message. Alerts from the hub will appear here.")
+            print("Sent. It should be in the Telegram group now.")
+            return
+        chats = telegram.recent_chats()
+    except (OSError, TelegramError) as error:
+        sys.exit(f"Telegram did not work: {error}")
+    if not chats:
+        sys.exit("The bot has not seen any chat yet. Add it to the family group, send /start there, try again.")
+    print("TELEGRAM_CHAT_ID is not set. Chats the bot has seen (a group's id starts with -):")
+    for seen_id, name in chats:
+        print(f"  {seen_id}  {name}")
 
 
 def hub_token() -> str:
