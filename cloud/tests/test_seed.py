@@ -63,3 +63,14 @@ def test_breakfast_in_the_kitchen_almost_every_morning():
 def test_nothing_happens_in_the_middle_of_the_night():
     for e in generate(14, today=TODAY):
         assert not 1 <= e["start"].astimezone(TZ).hour < 6
+
+
+def test_today_can_be_filled_with_one_room_left_silent():
+    from datetime import datetime
+    from nonna_cloud.seed import generate_today
+    events = generate_today("10:30", ["kitchen"], today=TODAY)
+    cutoff = datetime(2026, 11, 26, 10, 30, tzinfo=TZ)
+    assert events, "the morning should not be empty"
+    assert all(e["room"] != "kitchen" for e in events)
+    assert all(e["end"] <= cutoff for e in events)
+    assert all(e["start"].astimezone(TZ).date() == TODAY for e in events)

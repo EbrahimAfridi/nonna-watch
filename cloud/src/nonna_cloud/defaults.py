@@ -8,6 +8,7 @@ DEFAULT_SETTINGS = {
     "voiceCheckSeconds": 30,
     "longSilenceMinutes": 45,
     "offlineMinutes": 5,
+    "heartbeatMinutes": 5,
     "waterRunningMinutes": 20,
     "routineMinDays": 7,
     "routineMinShare": 0.6,

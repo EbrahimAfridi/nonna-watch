@@ -14,6 +14,11 @@ Usage (from the cloud/ folder):
 Options: --home maria   --days 14   --clear (delete old seed events first)   --seed 42 (same fake
 history every time)   --with-devices (also write listener heartbeats)   --telegram-chat-id ...
 
+Demo of a broken routine (M6): also fill TODAY up to a time, leaving one room silent:
+
+    uv run python -m nonna_cloud.seed --clear --today-until 10:30 --skip-room kitchen
+    uv run python -m nonna_cloud.checks --now 10:30            # -> "No kitchen sounds yet today"
+
 Writes: about 30 events per day, so 14 days is about 400 writes (free quota: 20,000 per day).
 Events from this script have source == "seed", so --clear only ever deletes fake data.
 """
@@ -159,6 +164,22 @@ def generate(days: int, tz_name: str = "Europe/Rome", today: date | None = None,
     return out
 
 
+def generate_today(until: str, skip_rooms: list[str], tz_name: str = "Europe/Rome",
+                   today: date | None = None, seed: int | None = 7) -> list[dict]:
+    """Today's normal events up to `until` ("HH:MM"), minus the rooms in `skip_rooms`."""
+    tz = ZoneInfo(tz_name)
+    today = today or datetime.now(tz).date()
+    hh, mm = (int(x) for x in until.split(":"))
+    cutoff = datetime(today.year, today.month, today.day, hh, mm, tzinfo=tz).astimezone(timezone.utc)
+    out = []
+    for e in generate_day(today, tz, random.Random(seed)):
+        if e["room"] in skip_rooms or e["start"] >= cutoff:
+            continue
+        e["end"] = min(e["end"], cutoff)
+        out.append(e)
+    return out
+
+
 def event_id(e: dict) -> str:
     """Same id scheme as the hub: {deviceId}_{startEpochMillis} (docs/firestore-schema.md)."""
     return f"{e['deviceId']}_{int(e['start'].timestamp() * 1000)}"
@@ -239,10 +260,14 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--emulator", action="store_true", help="write to the local emulator, not the real project")
     ap.add_argument("--key", help="path to the service-account key (real project only)")
     ap.add_argument("--dry-run", action="store_true", help="print what would be written, write nothing")
+    ap.add_argument("--today-until", metavar="HH:MM", help="also write today's normal events up to this time")
+    ap.add_argument("--skip-room", action="append", default=[], help="with --today-until: leave this room silent today")
     args = ap.parse_args(argv)
 
     tz_name = "Europe/Rome"
     events = generate(args.days, tz_name, seed=args.seed)
+    if args.today_until:
+        events += generate_today(args.today_until, args.skip_room, tz_name)
     print(summary(events, tz_name))
     if args.dry_run:
         return

@@ -63,6 +63,11 @@ def list_chats() -> None:
     print("Group ids are negative numbers. Use the family group's id as telegramChatId.")
 
 
+def send_message(chat_id: str, text: str) -> None:
+    """Post one message to a chat. Used by checks.py --telegram."""
+    call("sendMessage", chat_id=chat_id, text=text)
+
+
 def send_test(chat_id: str) -> None:
     call("sendMessage", chat_id=chat_id,
          text="✅ Nonna Watch test: the bot can post to this group. Real alerts will look like:\n"

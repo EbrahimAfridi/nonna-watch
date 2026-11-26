@@ -15,7 +15,10 @@ that fill it and check it. The hub (Ebrahim) and the apps (A) code against
 | `src/nonna_cloud/defaults.py` | Maria's home document: settings, help words in 5 languages. | C4 |
 | `src/nonna_cloud/db.py` | Connects Python to the emulator or to the real Firestore. | |
 | `src/nonna_cloud/telegram_setup.py` | Finds the family group's chat id and sends a test message. | C2 |
+| `src/nonna_cloud/routine.py` | Learns Maria's usual day and decides: routine missing? long silence? listener offline? Pure logic, no database. | C5 |
+| `src/nonna_cloud/checks.py` | Runs those checks against Firestore and writes alerts. Imported by the hub, or run from the command line. | C5 |
 | `tests/test_seed.py` | Tests for the fake-history generator. | C4 |
+| `tests/test_routine.py` | Tests for the routine checks, with a fake clock. | C5 |
 | `secrets/` | **Not in git.** You create it: service-account key, bot token. | C1/C2 |
 
 Two languages live here, for a reason:
@@ -47,7 +50,7 @@ uv sync            # Python 3.12 + libraries, into cloud/.venv (not committed)
 
 ```powershell
 npm run test:rules   # starts a throwaway Firestore emulator, runs 42 rules tests, stops it
-uv run pytest        # seed-generator tests, no emulator needed
+uv run pytest        # seed + routine tests (34), no emulator needed
 ```
 
 **Why an emulator:** it's a copy of Firestore running on your laptop. It's free, it needs no internet,
@@ -121,8 +124,53 @@ Free Spark plan, so no card is needed. Do it with the Google account the team wi
 
 ---
 
+## C5: routine, silence and offline checks
+
+**What it does.** Every 15 minutes it compares today with Maria's usual day:
+
+| Check | Fires when | Voice check first? |
+|---|---|---|
+| Routine missing | A room she is in every morning (e.g. the kitchen) has had no sound today, and it's past the latest normal time plus 30 minutes of grace. | Yes |
+| Long silence | No sound anywhere for 45 minutes, during hours when she is usually active. | Yes |
+| Listener offline | The hub marked a phone offline 5 minutes ago, or nothing has been heard from it for 10 minutes. | No |
+| Hub offline | The hub itself stopped sending heartbeats for 10 minutes. | No |
+
+**How it learns "usual".** Once a day it reads the last 14 days of events. For each room, and each
+room+sound, it notes which hours of the day usually have activity and what time the first sound of the day
+usually is. The TV, radio and music are ignored for this, because they can play with nobody there. The result
+is saved in `homes/maria/routines`, so the family app can show it too.
+
+**Why two files.** `routine.py` only does the thinking: data in, findings out, no database and no clock.
+That makes it easy to test with a fake clock, and lets the *same* code run in three places: Ebrahim's hub
+(E9, Path B), a Cloud Function (Path A), and the tests. `checks.py` is the thin layer that reads Firestore and
+writes alerts.
+
+**Each problem is reported once.** Alert ids are built from the problem, e.g. `routine_missing_kitchen_2026-11-27`.
+A second run finds the alert already exists and stays quiet.
+
+**Run it:**
+```powershell
+uv run python -m nonna_cloud.checks                  # check now; print, write nothing
+uv run python -m nonna_cloud.checks --now 10:30      # fake clock
+uv run python -m nonna_cloud.checks --report         # also write alerts
+uv run python -m nonna_cloud.checks --report --telegram --loop   # the real thing, every 15 minutes
+```
+
+**The M6 demo ("break the routine live")**, on the real project:
+```powershell
+uv run python -m nonna_cloud.seed --clear --today-until 10:30 --skip-room kitchen
+uv run python -m nonna_cloud.checks --now 10:30 --report --telegram
+```
+The first line writes 14 normal days, plus a normal morning today with no kitchen. The second line says
+"No kitchen sounds yet today. Maria is usually in the kitchen by 08:11", and posts it to Telegram.
+
 ## For teammates
 
+- **Ebrahim (hub, E9):** run the checks every 15 minutes with `from nonna_cloud.checks import Checker`
+  (example at the top of `checks.py`). Add `nonna-cloud = { path = "../cloud" }` to the hub's dependencies.
+  `Checker.run()` returns findings; run the voice check for those with `voice_check=True`, then call
+  `Checker.report()` and send the Telegram message. When a phone disconnects, write its device doc with
+  `online: false` at once (see the schema).
 - **Ebrahim (hub):** follow [docs/firestore-schema.md](../docs/firestore-schema.md). In particular, use
   Firestore `Timestamp`s (Python: timezone-aware `datetime`), use the event id `{deviceId}_{startEpochMillis}`
   so offline-queue retries don't duplicate, put `source: "hub"` on events, and write a `devices/hub` heartbeat.

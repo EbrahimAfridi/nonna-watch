@@ -55,7 +55,8 @@ One document per person being looked after. `homeId` is short and readable, for 
 | `thudSilenceSeconds` | number [10] | Silence after a thud before the voice check starts. |
 | `voiceCheckSeconds` | number [30] | How long to wait for an answer. |
 | `longSilenceMinutes` | number [45] | No sound for this long at an active hour → voice check. |
-| `offlineMinutes` | number [5] | No heartbeat for this long → "listener offline". |
+| `offlineMinutes` | number [5] | A listener the hub marked offline for this long → "listener offline". |
+| `heartbeatMinutes` | number [5] | How often the hub writes heartbeats (D7). Anything silent for `offlineMinutes + heartbeatMinutes` counts as offline, even if nobody marked it (e.g. the hub itself died). |
 | `waterRunningMinutes` | number [20] | Water for this long → gentle notice. |
 | `routineMinDays` | number [7] | Days of history needed before routine checks start. |
 | `routineMinShare` | number [0.6] | A room/sound counts as "usual" in an hour if it happened on at least this share of days. |
@@ -71,7 +72,7 @@ One document per listener phone, plus one for the hub itself (so the cloud can n
 | `kind` | string | `"listener"` | `listener` or `hub`. |
 | `room` | string | `"kitchen"` | Empty for the hub. |
 | `lastHeartbeat` | Timestamp | | The hub writes every 5 minutes (D7) and immediately when a listener connects or disconnects. |
-| `online` | bool | `true` | The hub's view. The offline check (C5) uses `lastHeartbeat`, not this flag, because a dead hub can't set it to false. |
+| `online` | bool | `true` | The hub's view. **When a listener disconnects, the hub writes `online: false` at once, with `lastHeartbeat` = the last time it heard the phone.** The offline check (C5) then alerts after `offlineMinutes`. A dead hub can't write this, so the check also alerts on any heartbeat older than `offlineMinutes + heartbeatMinutes`. |
 | `target` | string | `"hub"` | `hub` / `cloud` / `local` (the A10 setting). |
 | `battery` | number, optional | `87` | Percentage, if the listener reports it. |
 
@@ -115,23 +116,31 @@ so retries from the offline queue overwrite instead of duplicating.
 | `source` | string | `"hub"` | `hub` / `cloud` / `phone` / `routine`. |
 | `timings` | map, optional | `{"capturedMs": ..., "hubReceivedMs": ..., "aiDoneMs": ..., "alertSentMs": ...}` | Epoch milliseconds at each hop, for Experiment 1. `alertReceivedMs` is added by the family app if it can. |
 
-**Document id:** the hub uses `{type}_{room}_{timeEpochMillis}`; the routine checks use
-`{type}_{room or key}_{yyyy-mm-dd}` so the same missing routine is reported **once per day**, not every 15 minutes.
+**Document id:** the hub uses `{type}_{room}_{timeEpochMillis}`. The routine checks (C5) pick ids so each problem
+is reported **once**, not every 15 minutes:
+- `routine_missing_{room}_{yyyy-mm-dd}`: once per room per day.
+- `long_silence_{lastSoundEpochMillis}`: once per silent stretch.
+- `listener_offline_{deviceId}_{lastHeartbeatEpochMillis}` / `hub_offline_hub_{...}`: once per outage.
 
 ## `homes/{homeId}/routines/{routineId}`
 
-Written only by the routine learner (C5). `routineId` is `{room}__{sound slug}`, for example
-`kitchen__water_tap_faucet`. The special id `_activity` holds whole-house activity across all rooms,
-which is what the long-silence check uses.
+Written only by the routine learner (C5), once a day, from the previous 14 days. Ids:
+- `{room}__{sound slug}`, e.g. `kitchen__water_tap_faucet`: one sound in one room (for the app to show).
+- `{room}__all`, e.g. `kitchen__all`: any activity in that room. The routine-missing check uses these.
+- `_activity`: any activity in the house. The long-silence check uses this.
+
+"Activity" ignores sounds that can happen with nobody there: `Television`, `Radio`, `Music`, `Silence`.
 
 | Field | Type | Example | Notes |
 |---|---|---|---|
 | `room` | string | `"kitchen"` | `"*"` for `_activity`. |
 | `sound` | string | `"Water tap, faucet"` | `"*"` for `_activity`. |
 | `hourShare` | array of 24 numbers | `[0, 0, ..., 0.93, 0.86, ...]` | For each local hour: the share of days with at least one event in that hour (0–1). |
-| `usualFirstMinute` | number or null | `485` | Typical (median) first time of day, as minutes after local midnight (485 = 08:05). Null if it doesn't happen most days. |
+| `usualFirstMinute` | number or null | `485` | Typical (median) first time of day, as minutes after local midnight (485 = 08:05). Null if it doesn't happen on at least `routineMinShare` of days. |
+| `latestFirstMinute` | number or null | `530` | How late the first time gets on a normal late day (90th percentile). "Routine missing" fires at `latestFirstMinute + routineGraceMinutes`. |
 | `daysObserved` | number | `14` | |
 | `updatedAt` | Timestamp | | |
+| `learnedFor` | string | `"2026-11-27"` | Local date this was learned for. Lets the hub and a Cloud Function share one learning run per day. |
 
 ## `users/{uid}`
 
