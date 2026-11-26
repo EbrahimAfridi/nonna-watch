@@ -57,7 +57,7 @@ runs the AI on the audio and deletes it immediately. Only short text labels like
 | D16 | **ESP32 microphone** (€12) and **travel router** (€25) are not bought unless the group decides otherwise after everything else works. | |
 | D17 | **Billing: pending group decision (see section 11).** No GCP education credits exist. | |
 | D18 | Repo is a **monorepo** on GitHub (see section 6). One branch per track, merged to `main` daily. `main` must always run the end-to-end demo once it first works. | |
-| D19 | **Git identity:** no AI attribution anywhere in git (no "Generated with", no Co-Authored-By AI). Commit messages explain why, not what. | Group preference. |
+| D19 | **No AI attribution anywhere in git.** Commit messages, PR titles, PR bodies and branch names never contain trailers or notes like `Co-Authored-By: Claude`, `Generated with Claude Code`, `Written with ChatGPT`, or any "AI helped write this" line. Many assistants add these by default at the end of a commit message; tell yours not to, and strip them if they appear. Commit messages explain why, not what. | Group preference. Applies to every teammate and every assistant. |
 
 ## 4. Architecture
 
@@ -309,6 +309,8 @@ Three people, three AI assistants. To avoid redundant or diverging work:
 - Short daily message in the group: what you merged, what you are blocked on.
 - When your AI generates code, read it and run its test before pushing. Do not push code you
   cannot explain.
+- Before every commit, check the message has no AI trailer (see D19). If your assistant writes
+  the commit message, read the last lines before you accept it.
 
 ## 14. Known gotchas (so your AI does not rediscover them)
 
