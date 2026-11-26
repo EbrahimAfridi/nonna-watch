@@ -66,7 +66,7 @@ Inside the house (audio never leaves)
   Listener phone(s)  --audio 1 s chunks, WebSocket over Wi-Fi-->  Hub laptop (FastAPI)
   Listener phone(s)  <--"ask: are you okay?" command-----------  Hub
   Hub: YAMNet every second -> Silero VAD -> faster-whisper on speech -> detection rules
-       audio buffer ~1 s in RAM, then discarded. Never written to disk.
+       keeps a few seconds of audio in RAM, then discards it. Never written to disk.
 
 Leaving the house (labels and alerts only, ~150 bytes each)
   Hub  --batched events, heartbeat, alerts-->  Firestore
@@ -153,9 +153,9 @@ only hard rule is that a milestone is not "done" until the test for it passes on
 
 ### Shared first (whoever gets there first, in `docs/`)
 
-- S1. Hub WebSocket + REST contract written down (`docs/api-contract.md`): message types for
-  audio chunk, heartbeat, `ask`, `ask-result`, device registration. Ebrahim writes it; A codes
-  against it with a fake hub if the real one is not ready.
+- S1. Done: `docs/api-contract.md` (protocol 1). Hub WebSocket + REST contract: `hello` /
+  `welcome`, binary audio frames, `heartbeat`, `light`, `ask` / `ask_played`, `set_paused`,
+  `checkin_clip`, REST `/health`, `/devices`, `/ask`. A codes against it.
 - S2. Firestore schema and security rules written down (`docs/firestore-schema.md`). B writes it;
   Ebrahim and A code against it.
 
@@ -168,7 +168,7 @@ only hard rule is that a milestone is not "done" until the test for it passes on
 - E3. Silero VAD → speech segment → faster-whisper per configured language → normalised help-word
   match → prints `HELP`.
 - E4. FastAPI WebSocket server: accepts N phones, each registered with a room; runs E1–E3 on the
-  incoming stream instead of the laptop mic. Audio lives only in a ~1 s RAM buffer.
+  incoming stream instead of the laptop mic. Audio stays in RAM only, a few seconds at most.
 - E5. Detection rules (help word, scream, thud + 10 s silence, glass) → Telegram alert with
   room + time. Timestamp log at every hop (captured / hub received / AI done / alert sent).
 - E6. Firestore sync: batched events every 1–5 min, heartbeat every 5 min, alerts immediately.
