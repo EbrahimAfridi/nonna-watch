@@ -109,14 +109,14 @@ def test_unknown_message_types_are_ignored(client):
         wait_until_handled(websocket)  # fails if the unknown type got an error reply first
 
 
-def test_phone_audio_is_labelled_under_its_room(client, capsys):
-    tone = 0.5 * np.sin(2 * np.pi * 440 * np.arange(16_000) / 16_000)
+def test_phone_audio_becomes_events_under_its_room(client, capsys):
+    beep = 0.5 * np.sin(2 * np.pi * 1_000 * np.arange(16_000) / 16_000)
     with phone(client, room="bedroom") as websocket:
-        websocket.send_bytes(frame(0, tone))
+        websocket.send_bytes(frame(0, beep))
         wait_until_handled(websocket)
 
-    lines = [line for line in capsys.readouterr().out.splitlines() if "Sine wave" in line]
-    assert lines and lines[0].startswith("bedroom")
+    lines = [line for line in capsys.readouterr().out.splitlines() if "Beep, bleep" in line]
+    assert lines and lines[0].startswith("bedroom") and " alarm " in lines[0]
 
 
 def test_skipped_frames_are_counted(client):

@@ -14,12 +14,15 @@ The first run downloads Google's YAMNet model (4 MB) into `hub/models/` and chec
 ## Run
 
 ```
-uv run nonna-hub listen               # label the laptop microphone (Ctrl+C to stop)
-uv run nonna-hub listen a.wav b.mp3   # label audio files instead
+uv run nonna-hub listen               # the laptop microphone (Ctrl+C to stop)
+uv run nonna-hub listen a.wav b.mp3   # audio files instead
+uv run nonna-hub listen --raw a.wav   # YAMNet's top three labels every half second
 ```
 
-Every half second it prints the window's start time and YAMNet's top three labels with scores
-from 0 to 1.
+It prints one line per household event: when it started and ended, the category (water, toilet,
+door, glass, ... see `nonna_hub/categories.py`), the peak score from 0 to 1, and the YAMNet label
+behind it. An event ends after more than a second without its sound. `--raw` shows what YAMNet
+hears before the categories, which helps when tuning them.
 
 If the microphone only ever shows `Silence`, give your terminal app microphone access:
 
@@ -43,7 +46,7 @@ uv run --env-file .env nonna-hub serve
 ```
 
 It prints the address for the listener app, such as `ws://192.168.43.12:8000/ws/listener`, then
-one line per phone every half second. If macOS or Windows asks whether to accept incoming
+each phone's events with its room. If macOS or Windows asks whether to accept incoming
 connections, allow it (Windows: private networks).
 
 No phone yet? In a second terminal, a fake phone streams audio files or the laptop mic exactly as
