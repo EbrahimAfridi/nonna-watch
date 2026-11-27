@@ -79,24 +79,28 @@ service cloud.firestore {
           && d.lastHeartbeat is timestamp;
       }
 
-      // ---------- events ----------
-      match /events/{eventId} {
+      // ---------- timeline (decision D20: one document per room per flush) ----------
+      match /timeline/{chunkId} {
         allow read: if isMember(homeId);
-        // Only phone-only mode creates events from an app; the hub uses the Admin SDK.
-        allow create: if isMember(homeId) && validPhoneEvent(request.resource.data);
+        // Only phone-only mode creates chunks from an app; the hub uses the Admin SDK.
+        allow create: if isMember(homeId) && validPhoneChunk(request.resource.data);
         // The timeline is history: nobody edits or deletes it from an app.
         allow update, delete: if false;
       }
 
-      function validPhoneEvent(d) {
-        return d.keys().hasAll(['room', 'deviceId', 'sound', 'confidence', 'start', 'end', 'source'])
-          && d.keys().hasOnly(['room', 'deviceId', 'sound', 'confidence', 'start', 'end', 'source'])
+      // Rules can't loop over the events inside a chunk, so this checks the chunk's own fields and
+      // caps its size. The apps validate each event themselves.
+      function validPhoneChunk(d) {
+        return d.keys().hasAll(['room', 'deviceId', 'source', 'flushedAt', 'start', 'end', 'events'])
+          && d.keys().hasOnly(['room', 'deviceId', 'source', 'flushedAt', 'start', 'end', 'events'])
           && d.source == 'phone'
           && d.room is string
-          && d.sound is string
-          && d.confidence is number && d.confidence >= 0 && d.confidence <= 1
+          && d.deviceId is string
+          && d.flushedAt is timestamp
           && d.start is timestamp && d.end is timestamp
-          && d.end >= d.start;
+          && d.end >= d.start
+          && d.events is list
+          && d.events.size() >= 1 && d.events.size() <= 500;
       }
 
       // ---------- alerts ----------
@@ -123,7 +127,7 @@ service cloud.firestore {
                                'detail', 'voiceCheck', 'timings'])
           && d.source == 'phone'
           && d.status == 'sent'
-          && d.type in ['scream', 'crying', 'thud_silence', 'glass', 'smoke_alarm']
+          && d.type in ['scream', 'distress', 'thud', 'glass', 'smoke_alarm']   // the hub's names (D26)
           && d.severity in ['alert', 'notice']
           && d.time is timestamp
           && d.message is string;

@@ -1,6 +1,7 @@
 # Firestore schema and security rules (S2)
 
-Owner: Track B (cloud). Status: **draft v1**, open for comments from Ebrahim (hub) and A (Android).
+Owner: Track B (cloud). Status: **v2**, follows decisions D20, D22, D24, D26, D27 and D29. Open for comments
+from Ebrahim (hub) and A (Android).
 Any change to a field name or type after it is agreed goes into `DECISIONS.md` first.
 
 The rules file that enforces this is [`cloud/firestore.rules`](../cloud/firestore.rules); its tests
@@ -21,12 +22,13 @@ are in [`cloud/tests/rules/`](../cloud/tests/rules/).
 - **Times are Firestore `Timestamp`s**, not ISO strings. They sort and filter correctly, and every SDK
   converts them automatically: Python `datetime` (timezone-aware), Kotlin `com.google.firebase.Timestamp`.
   The ISO string in CONTEXT.md is only how an event looks when printed.
-- **Room ids** are lowercase snake case: `kitchen`, `bathroom`, `bedroom`, `living_room`.
-- **Sound names** are YAMNet's display names, exactly as YAMNet prints them, for example `"Water tap, faucet"`,
-  `"Thump, thud"`, `"Television"`.
+- **Room ids** are fixed by the listener protocol (D22): `kitchen`, `bathroom`, `bedroom`, `living_room`, `hallway`.
+- **Sounds** are stored twice: `category`, one of the hub's 19 household categories (`water`, `cooking`, `door`,
+  `tv_music`, ...; see `hub/nonna_hub/categories.py`), and `label`, the YAMNet display name at the peak
+  (`"Water tap, faucet"`). Routines are learned from the category, which is stabler.
 - **Languages** are ISO 639-1 codes: `it`, `en`, `hi`, `ur`, `bs`.
 - **Emails are stored lowercase.** Security rules compare them to the signed-in user's email.
-- **The hub picks its own document ids for events and alerts**, so retrying from the offline queue
+- **The hub picks its own document ids for timeline chunks and alerts**, so retrying from the offline queue
   overwrites the document instead of adding a duplicate (see each collection below).
 
 ## `homes/{homeId}`
@@ -38,8 +40,8 @@ One document per person being looked after. `homeId` is short and readable, for 
 | `name` | string | `"Maria"` | Used in alert texts: "Maria may need help". |
 | `timezone` | string | `"Europe/Rome"` | IANA name. Routine hours are in this zone. |
 | `languages` | array of string | `["it", "en"]` | Whisper runs once per language (D5). |
-| `helpWords` | map lang → array of string | `{"it": ["aiuto", "aiutami"], "hi": ["bachao", "बचाओ", "madad"]}` | Include script variants and accent-free spellings (`upomoc`). Matching is lowercase. |
-| `fineWords` | map lang → array of string | `{"it": ["sto bene", "tutto bene"], "en": ["i'm fine", "i am fine", "i'm okay"]}` | Answers to the voice check that mean "no alert" (E7). |
+| `helpWords` | map lang → array of string | `{"it": ["aiuto", "aiutami"], "hi": ["बचाओ", "بچاؤ", "bachao"]}` | Defaults are exactly D24. Hindi and Urdu share one list in both scripts. Matching is whole words, ignoring case and punctuation. |
+| `fineWords` | map lang → array of string | `{"it": ["sto bene", "bene"], "en": ["fine", "okay"]}` | Answers to the voice check that mean "no alert". Defaults are exactly D27; any negation still means not fine. |
 | `familyContacts` | array of map | `[{"name": "Luca", "phone": "+39...", "role": "son"}]` | Used by the call buttons in the FCM notification. `role` is free text. |
 | `memberEmails` | array of string | `["luca@gmail.com"]` | **Who may see this home.** Security rules use this field. Lowercase. |
 | `telegramChatId` | string | `"-1001234567890"` | The family group. The bot token is a secret and is **not** stored here. |
@@ -55,8 +57,8 @@ One document per person being looked after. `homeId` is short and readable, for 
 | `thudSilenceSeconds` | number [10] | Silence after a thud before the voice check starts. |
 | `voiceCheckSeconds` | number [30] | How long to wait for an answer. |
 | `longSilenceMinutes` | number [45] | No sound for this long at an active hour → voice check. |
-| `offlineMinutes` | number [5] | A listener the hub marked offline for this long → "listener offline". |
-| `heartbeatMinutes` | number [5] | How often the hub writes heartbeats (D7). Anything silent for `offlineMinutes + heartbeatMinutes` counts as offline, even if nobody marked it (e.g. the hub itself died). |
+| `offlineMinutes` | number [5] | A listener phone silent this long → "listener offline" (checked by the hub, D29). |
+| `heartbeatMinutes` | number [5] | How often the hub writes its heartbeat (D7). The cloud calls the hub offline after `offlineMinutes + heartbeatMinutes`. |
 | `waterRunningMinutes` | number [20] | Water for this long → gentle notice. |
 | `routineMinDays` | number [7] | Days of history needed before routine checks start. |
 | `routineMinShare` | number [0.6] | A room/sound counts as "usual" in an hour if it happened on at least this share of days. |
@@ -71,47 +73,60 @@ One document per listener phone, plus one for the hub itself (so the cloud can n
 |---|---|---|---|
 | `kind` | string | `"listener"` | `listener` or `hub`. |
 | `room` | string | `"kitchen"` | Empty for the hub. |
-| `lastHeartbeat` | Timestamp | | The hub writes every 5 minutes (D7) and immediately when a listener connects or disconnects. |
-| `online` | bool | `true` | The hub's view. **When a listener disconnects, the hub writes `online: false` at once, with `lastHeartbeat` = the last time it heard the phone.** The offline check (C5) then alerts after `offlineMinutes`. A dead hub can't write this, so the check also alerts on any heartbeat older than `offlineMinutes + heartbeatMinutes`. |
+| `lastHeartbeat` | Timestamp | | The hub writes every 5 minutes (D7), for itself and for each listener it hears. |
+| `online` | bool | `true` | The hub's view, for the family app to show. Listener-offline alerts come from the hub itself (D29). **The `hub` document is the one the cloud watches:** if its `lastHeartbeat` is older than `offlineMinutes + heartbeatMinutes`, C5 reports `hub_offline`, the one failure the hub can't report. |
 | `target` | string | `"hub"` | `hub` / `cloud` / `local` (the A10 setting). |
 | `battery` | number, optional | `87` | Percentage, if the listener reports it. |
 
-## `homes/{homeId}/events/{eventId}`
+## `homes/{homeId}/timeline/{chunkId}`
 
-One document per sound episode: consecutive identical labels merged into one (D7).
+The sound history. **Decision D20:** the hub does not write one document per sound. Every 60 seconds
+(10 s during the demo) it writes **one document per room**, a *chunk*, holding every event in that room
+that ended since the last write. Empty flushes are skipped. That caps the timeline at 1,440 writes per
+room per day, however busy the room is (free quota: 20,000 writes a day). Alerts are still written at once.
 
 | Field | Type | Example | Notes |
 |---|---|---|---|
 | `room` | string | `"kitchen"` | |
-| `deviceId` | string | `"listener-kitchen-cmf"` | |
-| `sound` | string | `"Water tap, faucet"` | YAMNet display name. Never a transcript. |
-| `confidence` | number | `0.91` | The highest score in the episode, 0–1. |
-| `start` | Timestamp | | |
-| `end` | Timestamp | | `end >= start`. |
+| `deviceId` | string | `"listener-kitchen"` | The listener that heard it. |
 | `source` | string | `"hub"` | `hub` / `cloud` / `phone` / `seed` (fake history, C4). |
+| `flushedAt` | Timestamp | | When the hub wrote this chunk. |
+| `start` | Timestamp | | Earliest `start` of the events inside. Lets queries pick chunks by time. |
+| `end` | Timestamp | | Latest `end` of the events inside. |
+| `events` | array of map | see below | At least 1, at most 500. |
 
-**Document id:** `{deviceId}_{startEpochMillis}`. One device can't start two episodes in the same millisecond,
-so retries from the offline queue overwrite instead of duplicating.
+Each entry in `events`:
 
-**Queries the apps need** (these work without extra indexes):
-- Today's timeline: `where("start", ">=", midnight).orderBy("start")`.
-- One room: `where("room", "==", "kitchen").where("start", ">=", t)`. Firestore may ask for a composite
-  index the first time; the error message contains a link that creates it.
+| Field | Type | Example | Notes |
+|---|---|---|---|
+| `category` | string | `"water"` | One of the hub's categories (`hub/nonna_hub/categories.py`). |
+| `label` | string | `"Water tap, faucet"` | YAMNet display name at the peak. Never a transcript (D25). |
+| `confidence` | number | `0.91` | Peak score, 0–1. |
+| `start`, `end` | Timestamp | | `end >= start`. |
+
+**Document id:** `{room}_{flushedAtEpochMillis}`. A room is flushed at most once per instant, and a retry from
+the offline queue keeps the same `flushedAt`, so it overwrites instead of duplicating.
+
+**Queries the apps need:**
+- Today's timeline: `timeline.where("end", ">=", midnight)`, then show every event inside each chunk.
+- One room: add `.where("room", "==", "kitchen")` (index provided in `cloud/firestore.indexes.json`).
+
+Python helpers that pack and unpack chunks: `cloud/src/nonna_cloud/timeline.py` (`to_chunks`, `flatten`).
 
 ## `homes/{homeId}/alerts/{alertId}`
 
 | Field | Type | Example | Notes |
 |---|---|---|---|
-| `type` | string | `"help_word"` | One of: `help_word`, `scream`, `crying`, `thud_silence`, `glass`, `long_silence`, `routine_missing`, `listener_offline`, `hub_offline`, `smoke_alarm`, `water_running`. |
-| `severity` | string | `"alert"` | `alert` (urgent push) or `notice` (gentle, e.g. water running). |
+| `type` | string | `"help_word"` | From the hub (its `rules.py` names, D26): `help_word`, `scream`, `distress`, `thud`, `glass`, `smoke_alarm`, `water_running`, `offline`, `back_online`. From the cloud checks (C5): `routine_missing`, `long_silence`, `hub_offline`. |
+| `severity` | string | `"alert"` | `alert` (urgent push) or `notice` (gentle: `water_running`, `back_online`). |
 | `room` | string | `"bathroom"` | Empty if not tied to a room. |
 | `time` | Timestamp | | When the cause happened, e.g. the shout. |
 | `message` | string | `"Maria may need help. Heard 'aiuto' in the bathroom at 14:03."` | Exactly the text the family received. |
-| `detail` | map, optional | `{"word": "aiuto", "lang": "it"}` or `{"routine": "kitchen__water_tap_faucet", "expectedBy": "11:00"}` | Type-specific extra information. |
+| `detail` | map, optional | `{"word": "aiuto"}` or `{"routine": "kitchen__all", "usual": "08:11", "deadline": "09:30"}` | Type-specific extra information. |
 | `status` | string | `"sent"` | `sent` → `seen` → `resolved`. The family app moves it forward. |
 | `answeredBy` | string or null | `"luca@gmail.com"` | Who pressed seen/resolved. |
 | `seenAt`, `resolvedAt` | Timestamp or null | | |
-| `voiceCheck` | map or null | `{"asked": true, "result": "no_answer"}` | `result`: `fine` / `help` / `no_answer` / `pending`. Null if no voice check ran. |
+| `voiceCheck` | map or null | `{"asked": true, "result": "no_answer"}` | `result`: `fine` / `help` / `no_answer` / `not_played` / `pending` (the hub's names, D27). Null if no voice check ran. |
 | `followUp` | string or null | `"She says she's okay"` | Set when she answers after an instant alert. |
 | `source` | string | `"hub"` | `hub` / `cloud` / `phone` / `routine`. |
 | `timings` | map, optional | `{"capturedMs": ..., "hubReceivedMs": ..., "aiDoneMs": ..., "alertSentMs": ...}` | Epoch milliseconds at each hop, for Experiment 1. `alertReceivedMs` is added by the family app if it can. |
@@ -120,21 +135,21 @@ so retries from the offline queue overwrite instead of duplicating.
 is reported **once**, not every 15 minutes:
 - `routine_missing_{room}_{yyyy-mm-dd}`: once per room per day.
 - `long_silence_{lastSoundEpochMillis}`: once per silent stretch.
-- `listener_offline_{deviceId}_{lastHeartbeatEpochMillis}` / `hub_offline_hub_{...}`: once per outage.
+- `hub_offline_hub_{lastHeartbeatEpochMillis}`: once per hub outage.
 
 ## `homes/{homeId}/routines/{routineId}`
 
 Written only by the routine learner (C5), once a day, from the previous 14 days. Ids:
-- `{room}__{sound slug}`, e.g. `kitchen__water_tap_faucet`: one sound in one room (for the app to show).
+- `{room}__{category}`, e.g. `kitchen__water`: one category in one room (for the app to show).
 - `{room}__all`, e.g. `kitchen__all`: any activity in that room. The routine-missing check uses these.
 - `_activity`: any activity in the house. The long-silence check uses this.
 
-"Activity" ignores sounds that can happen with nobody there: `Television`, `Radio`, `Music`, `Silence`.
+"Activity" ignores the `tv_music` category, which can play with nobody there.
 
 | Field | Type | Example | Notes |
 |---|---|---|---|
 | `room` | string | `"kitchen"` | `"*"` for `_activity`. |
-| `sound` | string | `"Water tap, faucet"` | `"*"` for `_activity`. |
+| `category` | string | `"water"` | `"*"` for `{room}__all` and `_activity`. |
 | `hourShare` | array of 24 numbers | `[0, 0, ..., 0.93, 0.86, ...]` | For each local hour: the share of days with at least one event in that hour (0–1). |
 | `usualFirstMinute` | number or null | `485` | Typical (median) first time of day, as minutes after local midnight (485 = 08:05). Null if it doesn't happen on at least `routineMinShare` of days. |
 | `latestFirstMinute` | number or null | `530` | How late the first time gets on a normal late day (90th percentile). "Routine missing" fires at `latestFirstMinute + routineGraceMinutes`. |
@@ -160,8 +175,8 @@ One document per signed-in family member, written by the family app itself.
 3. Members can change a home's settings, languages, help words, contacts and mode. They **cannot** create
    or delete homes, and cannot remove themselves from `memberEmails` (so nobody locks themselves out by accident).
 4. Members can **only move alerts forward**: change `status`, `answeredBy`, `seenAt`, `resolvedAt`. They
-   cannot edit the message or invent an alert, except phone-only mode, which may create alerts and events
-   with `source == "phone"`.
+   cannot edit the message or invent an alert, except phone-only mode, which may create timeline chunks and
+   the alerts YAMNet alone can detect (`scream`, `distress`, `thud`, `glass`, `smoke_alarm`) with `source == "phone"`.
 5. Routines are read-only for everyone except the service account.
 6. `users/{uid}` is readable and writable only by that same user.
 7. Everything else is denied.

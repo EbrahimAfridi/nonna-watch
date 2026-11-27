@@ -61,9 +61,10 @@ beforeEach(async () => {
     await setDoc(doc(db, 'homes/maria/devices/hub'), {
       kind: 'hub', room: '', lastHeartbeat: Timestamp.now(), online: true,
     });
-    await setDoc(doc(db, 'homes/maria/events/e1'), {
-      room: 'kitchen', deviceId: 'listener-kitchen', sound: 'Water tap, faucet',
-      confidence: 0.9, start: Timestamp.now(), end: Timestamp.now(), source: 'hub',
+    const t = Timestamp.now();
+    await setDoc(doc(db, 'homes/maria/timeline/kitchen_1'), {
+      room: 'kitchen', deviceId: 'listener-kitchen', source: 'hub', flushedAt: t, start: t, end: t,
+      events: [{ category: 'water', label: 'Water tap, faucet', confidence: 0.9, start: t, end: t }],
     });
     await setDoc(doc(db, 'homes/maria/alerts/a1'), {
       type: 'help_word', severity: 'alert', room: 'bathroom', time: Timestamp.now(),
@@ -85,11 +86,13 @@ const luca = () => as(LUCA);
 const eve = () => as(EVE);
 const nobody = () => env.unauthenticatedContext().firestore();
 
-function phoneEvent(extra = {}) {
+// A D20 timeline chunk, as phone-only mode would write it.
+function phoneChunk(extra = {}) {
   const t = Timestamp.now();
   return {
-    room: 'kitchen', deviceId: 'listener-kitchen', sound: 'Thump, thud',
-    confidence: 0.8, start: t, end: t, source: 'phone', ...extra,
+    room: 'kitchen', deviceId: 'listener-kitchen', source: 'phone', flushedAt: t, start: t, end: t,
+    events: [{ category: 'thud', label: 'Thump, thud', confidence: 0.8, start: t, end: t }],
+    ...extra,
   };
 }
 
@@ -167,40 +170,44 @@ describe('homes', () => {
   });
 });
 
-describe('events (the timeline)', () => {
+describe('timeline (D20 chunks)', () => {
   test('a member can read the timeline', async () => {
-    await assertSucceeds(getDocs(collection(luca(), 'homes/maria/events')));
+    await assertSucceeds(getDocs(collection(luca(), 'homes/maria/timeline')));
   });
 
   test('a stranger cannot read the timeline', async () => {
-    await assertFails(getDocs(collection(eve(), 'homes/maria/events')));
+    await assertFails(getDocs(collection(eve(), 'homes/maria/timeline')));
   });
 
-  test('phone-only mode can add an event', async () => {
-    await assertSucceeds(setDoc(doc(luca(), 'homes/maria/events/p1'), phoneEvent()));
+  test('phone-only mode can add a chunk', async () => {
+    await assertSucceeds(setDoc(doc(luca(), 'homes/maria/timeline/p1'), phoneChunk()));
   });
 
   test('an app cannot pretend to be the hub', async () => {
-    await assertFails(setDoc(doc(luca(), 'homes/maria/events/p1'), phoneEvent({ source: 'hub' })));
+    await assertFails(setDoc(doc(luca(), 'homes/maria/timeline/p1'), phoneChunk({ source: 'hub' })));
   });
 
-  test('an event cannot end before it starts', async () => {
+  test('a chunk cannot end before it starts', async () => {
     const start = Timestamp.fromMillis(Date.now());
     const end = Timestamp.fromMillis(Date.now() - 60_000);
-    await assertFails(setDoc(doc(luca(), 'homes/maria/events/p1'), phoneEvent({ start, end })));
+    await assertFails(setDoc(doc(luca(), 'homes/maria/timeline/p1'), phoneChunk({ start, end })));
   });
 
-  test('confidence must be between 0 and 1', async () => {
-    await assertFails(setDoc(doc(luca(), 'homes/maria/events/p1'), phoneEvent({ confidence: 7 })));
+  test('an empty chunk is refused', async () => {
+    await assertFails(setDoc(doc(luca(), 'homes/maria/timeline/p1'), phoneChunk({ events: [] })));
   });
 
-  test('a stranger cannot add events', async () => {
-    await assertFails(setDoc(doc(eve(), 'homes/maria/events/p1'), phoneEvent()));
+  test('unknown fields are refused', async () => {
+    await assertFails(setDoc(doc(luca(), 'homes/maria/timeline/p1'), phoneChunk({ audio: 'x' })));
+  });
+
+  test('a stranger cannot add to the timeline', async () => {
+    await assertFails(setDoc(doc(eve(), 'homes/maria/timeline/p1'), phoneChunk()));
   });
 
   test('nobody can edit or delete history', async () => {
-    await assertFails(updateDoc(doc(luca(), 'homes/maria/events/e1'), { sound: 'Silence' }));
-    await assertFails(deleteDoc(doc(luca(), 'homes/maria/events/e1')));
+    await assertFails(updateDoc(doc(luca(), 'homes/maria/timeline/kitchen_1'), { room: 'bathroom' }));
+    await assertFails(deleteDoc(doc(luca(), 'homes/maria/timeline/kitchen_1')));
   });
 });
 

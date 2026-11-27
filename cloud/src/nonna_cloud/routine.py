@@ -10,10 +10,15 @@ The three checks (requirements, "Detection rules"):
   routine_missing   A room she is normally in every morning has no sounds yet, well past the usual
                     time. Example: no kitchen sounds by 09:15 when breakfast is normally by 08:45.
   long_silence      No sound at all in the house for 45 minutes, at an hour she is usually active.
-  listener_offline  A listener phone stopped sending heartbeats. hub_offline: the hub itself did.
+  hub_offline       The hub itself stopped sending heartbeats. (A silent listener PHONE is detected by
+                    the hub, which holds every phone's connection: decision D29. Only the cloud can
+                    notice the hub dying, so that is the one offline check here.)
+
+Events are the hub's categories (water, cooking, door, ...), not raw YAMNet labels, because one
+habit can show up under several labels ("Water tap, faucet", "Sink").
 
 How "usual" is learned, in plain words:
-  For every room (and every room+sound) we look at the last 14 days and note, for each hour of the
+  For every room (and every room+category) we look at the last 14 days and note, for each hour of the
   day, on what share of days something happened then (`hourShare`), and what time the first sound
   of the day usually is (`usualFirstMinute`, the median) and how late it gets on a normal late day
   (`latestFirstMinute`, the 90th percentile). Weekends with a lie-in are therefore "normal".
@@ -32,17 +37,17 @@ from nonna_cloud.defaults import DEFAULT_SETTINGS
 
 ALL = "*"
 
-# Sounds that can happen with nobody there (a TV left on), so they don't prove she is up and about.
-PASSIVE_SOUNDS = {"Silence", "Television", "Radio", "Music"}
+# Categories that can happen with nobody there (a TV left on), so they don't prove she is up and about.
+PASSIVE_CATEGORIES = {"tv_music"}
 
 
 # ------------------------------------------------------------------ data shapes
 
 @dataclass
 class Routine:
-    """One learned habit. room == ALL means the whole house; sound == ALL means any sound in the room."""
+    """One learned habit. room == ALL means the whole house; category == ALL means anything in the room."""
     room: str
-    sound: str
+    category: str
     hourShare: list[float]
     usualFirstMinute: int | None
     latestFirstMinute: int | None
@@ -50,25 +55,25 @@ class Routine:
 
     @property
     def id(self) -> str:
-        return routine_id(self.room, self.sound)
+        return routine_id(self.room, self.category)
 
     def to_doc(self) -> dict:
         return {
-            "room": self.room, "sound": self.sound, "hourShare": self.hourShare,
+            "room": self.room, "category": self.category, "hourShare": self.hourShare,
             "usualFirstMinute": self.usualFirstMinute, "latestFirstMinute": self.latestFirstMinute,
             "daysObserved": self.daysObserved,
         }
 
     @classmethod
     def from_doc(cls, d: dict) -> "Routine":
-        return cls(d["room"], d["sound"], list(d["hourShare"]), d.get("usualFirstMinute"),
+        return cls(d["room"], d["category"], list(d["hourShare"]), d.get("usualFirstMinute"),
                    d.get("latestFirstMinute"), d["daysObserved"])
 
 
 @dataclass
 class Finding:
     """Something the family may need to hear about. `checks.py` turns it into an alert document."""
-    type: str               # routine_missing / long_silence / listener_offline / hub_offline
+    type: str               # routine_missing / long_silence / hub_offline
     room: str
     time: datetime          # when the problem started (deadline passed, last sound, last heartbeat)
     message: str            # the text the family reads
@@ -82,14 +87,14 @@ def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
-def routine_id(room: str, sound: str) -> str:
+def routine_id(room: str, category: str) -> str:
     if room == ALL:
         return "_activity"
-    return f"{room}__{'all' if sound == ALL else slug(sound)}"
+    return f"{room}__{'all' if category == ALL else slug(category)}"
 
 
 def is_activity(e: dict) -> bool:
-    return e["sound"] not in PASSIVE_SOUNDS
+    return e["category"] not in PASSIVE_CATEGORIES
 
 
 def settings_for(home: dict) -> dict:
@@ -150,18 +155,18 @@ def learn(events: list[dict], tz: ZoneInfo, min_share: float = 0.6) -> dict[str,
         day_firsts[local.date()] = min(minute, day_firsts.get(local.date(), minute))
 
     for e in events:
-        add((e["room"], e["sound"]), e)            # every sound, for the app to show
+        add((e["room"], e["category"]), e)         # every category, for the app to show
         if is_activity(e):
             add((e["room"], ALL), e)               # "someone is in the kitchen"
             add((ALL, ALL), e)                     # "someone is in the house"
 
     routines = {}
-    for (room, sound), covered in hits.items():
+    for (room, category), covered in hits.items():
         share = [round(sum(1 for (_, h) in covered if h == hour) / n, 3) for hour in range(24)]
-        first = list(firsts[(room, sound)].values())
+        first = list(firsts[(room, category)].values())
         regular = len(first) / n >= min_share
         r = Routine(
-            room=room, sound=sound, hourShare=share,
+            room=room, category=category, hourShare=share,
             usualFirstMinute=int(median(first)) if regular else None,
             latestFirstMinute=_percentile(first, 0.9) if regular else None,
             daysObserved=n,
@@ -180,7 +185,7 @@ def check_missing_routines(routines: dict[str, Routine], events: list[dict], now
     minute_now = local_now.hour * 60 + local_now.minute
     out = []
     for r in routines.values():
-        if r.room == ALL or r.sound != ALL or r.latestFirstMinute is None:
+        if r.room == ALL or r.category != ALL or r.latestFirstMinute is None:
             continue
         deadline = r.latestFirstMinute + s["routineGraceMinutes"]
         if deadline >= 24 * 60 or minute_now < deadline:
@@ -242,53 +247,36 @@ def check_long_silence(activity: Routine | None, events: list[dict], now: dateti
     )
 
 
-def check_offline(devices: dict[str, dict], now: datetime, tz: ZoneInfo, s: dict) -> list[Finding]:
-    """Listeners (and the hub) whose heartbeat stopped.
+def check_hub_offline(devices: dict[str, dict], now: datetime, tz: ZoneInfo, s: dict) -> list[Finding]:
+    """The hub stopped writing its heartbeat (devices/hub).
 
-    The hub writes heartbeats every `heartbeatMinutes` (5, see D7), so a heartbeat can legitimately be
-    almost 5 minutes old. Rules:
-      - a listener the hub marked offline (online == false) -> alert after `offlineMinutes`
-        (the hub writes that at once when the phone disconnects, so "unplug -> alert in 5 min" holds);
-      - anything not heard from for `offlineMinutes + heartbeatMinutes` -> alert (catches a dead hub,
-        which can't write online == false itself).
-    If the hub is offline, its listeners look offline too; only the hub is reported then.
+    The hub writes every `heartbeatMinutes` (5, D7), so its heartbeat can legitimately be almost 5
+    minutes old. It counts as offline after `offlineMinutes + heartbeatMinutes` (10 by default).
+    This only means something when the check runs in the cloud (Path A): a hub can't notice its own death.
     """
-    limit = timedelta(minutes=s["offlineMinutes"])
-    slack = timedelta(minutes=s["heartbeatMinutes"])
-
-    def down(d: dict) -> bool:
-        last = d.get("lastHeartbeat")
-        if last is None:
-            return False
-        age = now - last
-        return age >= limit + slack or (d.get("online") is False and age >= limit)
-
-    hub_down = any(d.get("kind") == "hub" and down(d) for d in devices.values())
+    limit = timedelta(minutes=s["offlineMinutes"] + s["heartbeatMinutes"])
     out = []
     for dev_id, d in sorted(devices.items()):
-        if not down(d) or (hub_down and d.get("kind") != "hub"):
+        last = d.get("lastHeartbeat")
+        if d.get("kind") != "hub" or last is None or now - last < limit:
             continue
-        last = d["lastHeartbeat"]
         at = hhmm(last.astimezone(tz).hour * 60 + last.astimezone(tz).minute)
-        if d.get("kind") == "hub":
-            kind, room = "hub_offline", ""
-            msg = f"The home hub has been offline since {at}. Instant alerts can't be sent until it is back."
-        else:
-            kind, room = "listener_offline", d.get("room", "")
-            msg = f"{room_name(room).capitalize() or 'A'} listener offline since {at}."
-        out.append(Finding(type=kind, room=room, time=last, message=msg,
-                           alert_id=f"{kind}_{dev_id}_{int(last.timestamp() * 1000)}",
-                           voice_check=False, detail={"deviceId": dev_id}))
+        out.append(Finding(
+            type="hub_offline", room="", time=last,
+            message=f"The home hub has been offline since {at}. Instant alerts can't be sent until it is back.",
+            alert_id=f"hub_offline_{dev_id}_{int(last.timestamp() * 1000)}",
+            voice_check=False, detail={"deviceId": dev_id},
+        ))
     return out
 
 
 def run_checks(home: dict, routines: dict[str, Routine], events: list[dict],
                devices: dict[str, dict], now: datetime) -> list[Finding]:
-    """All checks for one home at time `now`. `events` should cover at least the last 24 hours."""
+    """All checks for one home at time `now`. `events` (flat, see timeline.py) should cover the last 24 hours."""
     tz = ZoneInfo(home.get("timezone", "Europe/Rome"))
     s = settings_for(home)
     name = home.get("name", "She")
-    findings = check_offline(devices, now, tz, s)
+    findings = check_hub_offline(devices, now, tz, s)
 
     if home.get("mode") == "away":
         return findings                                  # nobody home: only watch the equipment

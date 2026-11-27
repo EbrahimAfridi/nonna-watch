@@ -15,25 +15,31 @@ DEFAULT_SETTINGS = {
     "routineGraceMinutes": 30,
 }
 
-# Help words per language, with the spellings Whisper may produce (requirements, "Languages").
+# Help words per language: exactly decision D24 (the hub's hub/nonna_hub/help_words.py).
+# Hindi and Urdu share one list with Devanagari, Urdu and Latin spellings, because Whisper may write
+# either script for either language.
+_HI_UR = ["बचाओ", "بچاؤ", "بچاو", "bachao", "मदद", "مدد", "madad"]
 HELP_WORDS = {
-    "it": ["aiuto", "aiutami", "aiutatemi"],
-    "en": ["help", "help me"],
-    "hi": ["bachao", "बचाओ", "madad", "मदद"],
-    "ur": ["bachao", "بچاؤ", "बचाओ", "madad", "مدد"],
-    "bs": ["upomoć", "upomoc", "pomoć", "pomoc"],
+    "it": ["aiuto", "aiutami", "aiutatemi", "soccorso"],
+    "en": ["help"],
+    "hi": _HI_UR,
+    "ur": _HI_UR,
+    "bs": ["upomoć", "upomoc", "pomoć", "pomoc", "pomozite", "pomagajte"],
 }
 
-# Answers to "Are you okay?" that mean: no alert (voice check, E7).
+# Answers to "Are you okay?" that mean: no alert. Exactly decision D27 (the hub's voice_check.py).
+# The hub also treats any negation ("non sto bene") as NOT fine.
+_HI_UR_FINE = ["ठीक", "ٹھیک", "theek", "thik"]
 FINE_WORDS = {
-    "it": ["sto bene", "tutto bene", "tutto a posto"],
-    "en": ["i'm fine", "i am fine", "i'm okay", "i am okay", "i'm ok"],
-    "hi": ["main theek hoon", "मैं ठीक हूँ", "theek hoon"],
-    "ur": ["main theek hoon", "میں ٹھیک ہوں", "theek hoon"],
-    "bs": ["dobro sam", "u redu je", "sve je u redu"],
+    "it": ["sto bene", "tutto bene", "tutto a posto", "bene"],
+    "en": ["fine", "okay", "ok", "all right", "alright", "all good"],
+    "hi": _HI_UR_FINE,
+    "ur": _HI_UR_FINE,
+    "bs": ["dobro", "u redu", "okej", "ok"],
 }
 
-ROOMS = ["kitchen", "bathroom", "bedroom"]
+# Room ids are fixed by the listener protocol (decision D22).
+ROOMS = ["kitchen", "bathroom", "bedroom", "living_room", "hallway"]
 
 
 def demo_home(member_emails: list[str], telegram_chat_id: str = "") -> dict:

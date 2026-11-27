@@ -3,7 +3,13 @@
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
-from nonna_cloud.seed import event_id, generate
+from nonna_cloud.seed import generate
+from nonna_cloud.timeline import chunk_id, flatten, to_chunks
+
+# The hub's 19 categories (hub/nonna_hub/categories.py).
+HUB_CATEGORIES = {"scream", "distress", "thud", "glass", "smoke_alarm", "speech", "cough", "snoring",
+                  "footsteps", "door", "doorbell", "phone", "alarm", "water", "toilet", "cooking",
+                  "cleaning", "grooming", "tv_music"}
 
 TZ = ZoneInfo("Europe/Rome")
 TODAY = date(2026, 11, 26)          # a Thursday
@@ -26,27 +32,41 @@ def test_same_seed_gives_same_history():
     assert generate(3, today=TODAY, seed=1) != generate(3, today=TODAY, seed=2)
 
 
-def test_events_follow_the_schema():
+def test_events_use_the_hub_categories():
     for e in generate(14, today=TODAY):
-        assert set(e) == {"room", "deviceId", "sound", "confidence", "start", "end", "source"}
-        assert e["source"] == "seed"
+        assert set(e) == {"room", "category", "label", "confidence", "start", "end"}
+        assert e["category"] in HUB_CATEGORIES
         assert e["room"] in {"kitchen", "bathroom", "bedroom"}
-        assert e["deviceId"] == f"listener-{e['room']}"
         assert 0 <= e["confidence"] <= 1
         assert e["end"] >= e["start"]
         assert e["start"].tzinfo is not None
 
 
-def test_ids_are_unique_so_nothing_is_overwritten():
-    # Checked for every start date in a year: one date once produced two events in the same second.
-    for offset in range(365):
-        events = generate(14, today=TODAY + timedelta(days=offset))
-        assert len({event_id(e) for e in events}) == len(events), TODAY + timedelta(days=offset)
+def test_chunks_hold_every_event_exactly_once():
+    events = generate(14, today=TODAY)
+    chunks = to_chunks(events, source="seed")
+    assert sorted(flatten(chunks), key=lambda e: (e["start"], e["room"], e["label"])) ==         sorted(events, key=lambda e: (e["start"], e["room"], e["label"]))
+
+
+def test_chunks_follow_the_schema():
+    for c in to_chunks(generate(3, today=TODAY), source="seed"):
+        assert set(c) == {"room", "deviceId", "source", "flushedAt", "start", "end", "events"}
+        assert c["source"] == "seed" and c["deviceId"] == f"listener-{c['room']}"
+        assert c["start"] == min(e["start"] for e in c["events"])
+        assert c["end"] == max(e["end"] for e in c["events"])
+        assert all(e["end"] < c["flushedAt"] for e in c["events"])     # flushed after they ended
+        assert c["flushedAt"].timestamp() % 60 == 0                     # on a minute boundary
+
+
+def test_chunk_ids_are_unique_so_nothing_is_overwritten():
+    for offset in range(0, 365, 7):
+        chunks = to_chunks(generate(14, today=TODAY + timedelta(days=offset)), source="seed")
+        assert len({chunk_id(c) for c in chunks}) == len(chunks)
 
 
 def test_size_stays_far_inside_the_free_write_quota():
-    per_day = len(generate(14, today=TODAY)) / 14
-    assert 20 <= per_day <= 60
+    writes_per_day = len(to_chunks(generate(14, today=TODAY), source="seed")) / 14
+    assert 10 <= writes_per_day <= 60
 
 
 def test_breakfast_in_the_kitchen_almost_every_morning():

@@ -7,9 +7,10 @@ import pytest
 
 from nonna_cloud.defaults import DEFAULT_SETTINGS, demo_home
 from nonna_cloud.routine import (
-    check_long_silence, check_missing_routines, check_offline, learn, run_checks, settings_for,
+    check_hub_offline, check_long_silence, check_missing_routines, learn, run_checks, settings_for,
 )
 from nonna_cloud.seed import generate
+from nonna_cloud.timeline import CATEGORY_OF
 
 TZ = ZoneInfo("Europe/Rome")
 TODAY = date(2026, 11, 26)               # a Thursday
@@ -20,9 +21,10 @@ def at(hh: int, mm: int = 0, day: date = TODAY) -> datetime:
     return datetime(day.year, day.month, day.day, hh, mm, tzinfo=TZ)
 
 
-def ev(room: str, sound: str, start: datetime, minutes: float = 2) -> dict:
-    return {"room": room, "deviceId": f"listener-{room}", "sound": sound, "confidence": 0.9,
-            "start": start, "end": start + timedelta(minutes=minutes), "source": "test"}
+def ev(room: str, label: str, start: datetime, minutes: float = 2) -> dict:
+    """A flat event (timeline.py) for a YAMNet label, with the hub's category for it."""
+    return {"room": room, "category": CATEGORY_OF[label], "label": label, "confidence": 0.9,
+            "start": start, "end": start + timedelta(minutes=minutes)}
 
 
 @pytest.fixture(scope="module")
@@ -56,7 +58,7 @@ def test_night_is_quiet_and_mornings_are_busy(routines):
 def test_tv_does_not_count_as_her_being_active():
     events = [ev("kitchen", "Television", at(9, 0, TODAY - timedelta(days=d)), 60) for d in range(1, 8)]
     r = learn(events, TZ)
-    assert "kitchen__television" in r          # still learned, so the app can show it
+    assert "kitchen__tv_music" in r            # still learned, so the app can show it
     assert "kitchen__all" not in r             # but it proves nothing about Maria
     assert "_activity" not in r
 
@@ -145,42 +147,40 @@ def test_one_silence_is_reported_once(routines):
     assert a.alert_id == b.alert_id
 
 
-# ------------------------------------------------------------------ offline
+# ------------------------------------------------------------------ hub offline
+# (A silent listener phone is the hub's job, decision D29. The cloud watches the hub itself.)
 
-def beat(kind: str, room: str, minutes_ago: float, online: bool, now: datetime) -> dict:
-    return {"kind": kind, "room": room, "online": online,
-            "lastHeartbeat": (now - timedelta(minutes=minutes_ago)).astimezone(timezone.utc)}
+def hub(minutes_ago: float, now: datetime) -> dict:
+    return {"hub": {"kind": "hub", "room": "", "online": True,
+                    "lastHeartbeat": (now - timedelta(minutes=minutes_ago)).astimezone(timezone.utc)}}
 
 
-def test_unplugged_listener_reported_after_5_minutes():
+def test_hub_heartbeat_a_few_minutes_old_is_normal():
     now = at(14, 10)
-    devs = {"hub": beat("hub", "", 1, True, now),
-            "listener-kitchen": beat("listener", "kitchen", 6, False, now)}
-    found = check_offline(devs, now, TZ, S)
-    assert [f.type for f in found] == ["listener_offline"]
-    assert found[0].message == "Kitchen listener offline since 14:04."
+    assert check_hub_offline(hub(9, now), now, TZ, S) == []        # writes every 5 min, so up to ~5 is normal
+
+
+def test_silent_hub_is_reported():
+    now = at(14, 10)
+    found = check_hub_offline(hub(11, now), now, TZ, S)
+    assert [f.type for f in found] == ["hub_offline"]
+    assert "since 13:59" in found[0].message
     assert found[0].voice_check is False
 
 
-def test_heartbeat_a_few_minutes_old_is_normal():
+def test_listener_phones_are_left_to_the_hub():
     now = at(14, 10)
-    devs = {"listener-kitchen": beat("listener", "kitchen", 6, True, now)}   # hub writes every 5 min
-    assert check_offline(devs, now, TZ, S) == []
+    devs = {"listener-kitchen": {"kind": "listener", "room": "kitchen", "online": False,
+                                 "lastHeartbeat": (now - timedelta(hours=1)).astimezone(timezone.utc)}}
+    assert check_hub_offline(devs, now, TZ, S) == []
 
 
-def test_silent_listener_reported_even_if_never_marked_offline():
+def test_one_hub_outage_is_reported_once():
     now = at(14, 10)
-    devs = {"listener-kitchen": beat("listener", "kitchen", 11, True, now)}
-    assert [f.type for f in check_offline(devs, now, TZ, S)] == ["listener_offline"]
-
-
-def test_dead_hub_is_reported_once_not_once_per_phone():
-    now = at(14, 10)
-    devs = {"hub": beat("hub", "", 11, True, now),
-            "listener-kitchen": beat("listener", "kitchen", 11, True, now),
-            "listener-bathroom": beat("listener", "bathroom", 11, True, now)}
-    found = check_offline(devs, now, TZ, S)
-    assert [f.type for f in found] == ["hub_offline"]
+    devs = hub(11, now)
+    later = now + timedelta(minutes=15)
+    devs_later = {"hub": devs["hub"]}                                # same last heartbeat
+    assert check_hub_offline(devs, now, TZ, S)[0].alert_id == check_hub_offline(devs_later, later, TZ, S)[0].alert_id
 
 
 # ------------------------------------------------------------------ everything together

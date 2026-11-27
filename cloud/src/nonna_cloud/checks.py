@@ -25,9 +25,9 @@ Used from the hub (Path B, task E9), so the hub can run the voice check before a
             checker.report(f)
         telegram.send(f.message)
 
-Cost per run (Spark free tier: 50,000 reads and 20,000 writes a day): about 30-60 reads for today's
-events and devices; relearning the routine reads ~14 days of events, but only once a day.
-At one run every 15 minutes that is well under 10,000 reads a day.
+Cost per run (Spark free tier: 50,000 reads and 20,000 writes a day): the last 24 hours of timeline
+documents (one per room per minute at most, usually far fewer) plus the devices; relearning reads 14 days
+of timeline, but only once a day. In the demo home that is a few thousand reads a day.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from nonna_cloud.routine import Finding, Routine, learn, run_checks, settings_for
+from nonna_cloud.timeline import flatten, overlaps
 
 HISTORY_DAYS = 14
 
@@ -53,11 +54,12 @@ class Checker:
     # ---------------------------------------------------------------- reading
 
     def _events_since(self, since: datetime, until: datetime | None = None) -> list[dict]:
+        """Flat events (timeline.py) that overlap [since, until). Reads the D20 chunk documents."""
         from google.cloud.firestore_v1.base_query import FieldFilter
-        q = self.home_ref.collection("events").where(filter=FieldFilter("start", ">=", since))
-        if until is not None:
-            q = q.where(filter=FieldFilter("start", "<", until))
-        return [d.to_dict() for d in q.stream()]
+        # One range filter only (no composite index needed); the `until` side is filtered here.
+        q = self.home_ref.collection("timeline").where(filter=FieldFilter("end", ">=", since))
+        chunks = [d.to_dict() for d in q.stream()]
+        return [e for e in flatten(chunks) if overlaps(e, since, until)]
 
     def routines(self, now: datetime, tz: ZoneInfo, min_share: float) -> dict[str, Routine]:
         """Learned routines for today. Relearned at most once a day, then cached."""
