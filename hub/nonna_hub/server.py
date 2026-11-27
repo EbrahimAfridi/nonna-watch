@@ -45,6 +45,8 @@ from nonna_hub.telegram import Telegram, TelegramError
 from nonna_hub.voice_check import ANSWER_WAIT_S, ASK_PLAYED_TIMEOUT_S, QUESTIONS, VoiceCheck, is_question
 
 HELLO_TIMEOUT_S = 10
+OFFLINE_AFTER_MS = 5 * 60_000  # CONTEXT.md section 4: no heartbeat from a listener for 5 min
+WATCH_EVERY_S = 30
 
 # The phone hung up, or the hub itself closed that connection because a newer one replaced it
 # (Starlette raises WebSocketDisconnected for a socket the app already closed).
@@ -92,6 +94,8 @@ class Hub:
         self._question = QUESTIONS[checkin_language]
         self._tasks: set[asyncio.Task] = set()  # background work, held so it is not garbage-collected
         self.listeners: dict[str, Listener] = {}  # by room: one listener per room
+        self.last_heard_ms: dict[str, int] = {}  # by room, kept after a phone leaves to notice it is gone
+        self._offline: set[str] = set()  # rooms already reported offline
         self.started_ms = now_ms()
 
     def token_matches(self, token: str) -> bool:
@@ -128,11 +132,13 @@ class Hub:
             )
             phone = hello.device_model or "unknown phone"
             print(f"{hello.room:<12} connected: {phone}, app {hello.app_version or '?'}")
+            self._heard_from(hello.room)
             try:
                 while True:
                     message = await websocket.receive()
                     if message["type"] == "websocket.disconnect":
                         break
+                    self._heard_from(listener.room)
                     if message.get("bytes") is not None:
                         await self._handle_frame(listener, message["bytes"])
                     elif message.get("text") is not None:
@@ -290,6 +296,26 @@ class Hub:
             message = follow_up_message(check.alert, listener.room, detail)
             self._deliver_later(listener.room, check.alert.at_ms, message)
 
+    async def watch_listeners(self) -> None:
+        """Report a room whose phone has sent nothing, not even a heartbeat, for 5 minutes."""
+        while True:
+            await asyncio.sleep(WATCH_EVERY_S)
+            for room, heard_ms in self.last_heard_ms.items():
+                if room not in self._offline and now_ms() - heard_ms >= OFFLINE_AFTER_MS:
+                    self._offline.add(room)
+                    self._announce(room, Alert("offline", heard_ms))
+
+    def _heard_from(self, room: str) -> None:
+        self.last_heard_ms[room] = now_ms()
+        if room in self._offline:
+            self._offline.discard(room)
+            self._announce(room, Alert("back_online", now_ms()))
+
+    def _announce(self, room: str, alert: Alert) -> None:
+        """An alert about the listener itself, so there is no sound behind it to time."""
+        print(f"{room:<12} {clock(alert.at_ms)}   ALERT        {alert.kind}")
+        self._deliver_later(room, alert.at_ms, alert.message(room))
+
     def _raise_alert(self, listener: Listener, alert: Alert) -> None:
         """Print the alert with how long it took to get here, then send it without waiting."""
         received_s = (listener.last_frame_ms - alert.at_ms) / 1000
@@ -351,7 +377,13 @@ class Hub:
 
 
 def create_app(hub: Hub) -> FastAPI:
-    app = FastAPI(title="Nonna Watch hub")
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI):
+        watcher = asyncio.create_task(hub.watch_listeners())
+        yield
+        watcher.cancel()
+
+    app = FastAPI(title="Nonna Watch hub", lifespan=lifespan)
     bearer = HTTPBearer(auto_error=False)
 
     def require_token(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> None:

@@ -192,9 +192,15 @@ only hard rule is that a milestone is not "done" until the test for it passes on
   question is asked in the home's first language (D27). Checked through a fake phone: "aiuto" →
   alert → "Stai bene?" → "sì, sto bene" → follow-up.
 - E8. Multi-room, smoke alarm, long-running water; hub config from `homes/{id}` settings.
+  Done except the config: one listener per room (E4), smoke alarm (E5), and a gentle notice
+  after 20 min of running water. Left: read languages, help words and the question from
+  `homes/{id}` once E6 exists.
 - E9. If no billing (section 11): the routine / long-silence / offline checks as a 15-minute loop
-  inside the hub, using B's logic.
-- E10. Dockerfile for the hub so B can deploy the identical image to Cloud Run.
+  inside the hub, using B's logic. Offline done, in either billing path: a room that sends nothing
+  for 5 min alerts once, and again when it is back (D29). Left: routine and long silence (C5).
+- E10. Dockerfile for the hub so B can deploy the identical image to Cloud Run. Done:
+  `hub/Dockerfile`, with YAMNet and Whisper inside so a cold start downloads nothing; settings
+  through environment variables; deploy notes in `hub/README.md`.
 
 ### Track: Android (A)
 

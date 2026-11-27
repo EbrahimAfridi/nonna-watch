@@ -11,6 +11,8 @@ INSTANT = ("scream", "distress", "glass", "smoke_alarm")  # alert on the first w
 SIGNS_OF_LIFE = {"speech", "footsteps", "door", "cough", "cooking", "toilet", "grooming"}
 THUD_SILENCE_MS = 10_000
 COOLDOWN_MS = 60_000  # at most one alert of each kind per room per minute, however long the sound lasts
+WATER_NOTICE_MS = 20 * 60_000  # a tap running this long gets a gentle notice, not an alarm
+WATER_GAP_MS = 30_000  # a running tap is not heard in every window; a gap this long means it stopped
 
 CHECK_FIRST = ("thud", "glass")  # ask "Are you okay?" first; alert only without a reassuring answer
 CHECK_AFTER = ("help_word", "scream", "distress")  # alert at once, then ask; "fine" sends a follow-up
@@ -33,6 +35,9 @@ MESSAGES = {
     "thud": "A heavy thud in the {room} at {time}, then 10 s without movement: possible fall.",
     "glass": "Glass breaking in the {room} at {time}.",
     "smoke_alarm": "Smoke alarm sounding in the {room} at {time}.",
+    "water_running": "Note: water has been running in the {room} since {time}, for 20 minutes now.",
+    "offline": "The {room} listener has sent nothing since {time}: no audio or heartbeat for 5 minutes.",
+    "back_online": "The {room} listener is working again since {time}.",
 }
 
 
@@ -69,6 +74,9 @@ class RoomRules:
     def __init__(self):
         self._last_alert_ms: dict[str, int] = {}
         self._thud_ms: int | None = None  # a thud still waiting to see whether anyone moves
+        self._water_since_ms = 0
+        self._water_last_ms: int | None = None
+        self._water_noticed = False
 
     def on_window(self, window_ms: int, detections: list[Detection]) -> list[Alert]:
         heard = {detection.category for detection in detections}
@@ -76,20 +84,36 @@ class RoomRules:
         for kind in INSTANT:
             if kind in heard:
                 alerts += self._alert(kind, window_ms)
+        return alerts + self._thud(window_ms, heard) + self._water(window_ms, heard)
+
+    def on_speech(self, said: Utterance) -> list[Alert]:
+        if not said.help_words:
+            return []
+        return self._alert("help_word", said.end_ms, ", ".join(said.help_words))
+
+    def _thud(self, window_ms: int, heard: set[str]) -> list[Alert]:
+        """A thud alerts once 10 s pass without a sign of life."""
         if "thud" in heard:
             self._thud_ms = window_ms
         elif self._thud_ms is not None:
             if heard & SIGNS_OF_LIFE:
                 self._thud_ms = None
             elif window_ms - self._thud_ms >= THUD_SILENCE_MS:
-                alerts += self._alert("thud", self._thud_ms)
-                self._thud_ms = None
-        return alerts
+                thud_ms, self._thud_ms = self._thud_ms, None
+                return self._alert("thud", thud_ms)
+        return []
 
-    def on_speech(self, said: Utterance) -> list[Alert]:
-        if not said.help_words:
+    def _water(self, window_ms: int, heard: set[str]) -> list[Alert]:
+        """A gentle notice, once, when a tap has been running for 20 minutes."""
+        if "water" not in heard:
             return []
-        return self._alert("help_word", said.end_ms, ", ".join(said.help_words))
+        if self._water_last_ms is None or window_ms - self._water_last_ms > WATER_GAP_MS:
+            self._water_since_ms, self._water_noticed = window_ms, False
+        self._water_last_ms = window_ms
+        if self._water_noticed or window_ms - self._water_since_ms < WATER_NOTICE_MS:
+            return []
+        self._water_noticed = True
+        return [Alert("water_running", self._water_since_ms)]
 
     def reassured(self, kind: str) -> None:
         """The voice check started by an alert of this kind got a reassuring answer."""
