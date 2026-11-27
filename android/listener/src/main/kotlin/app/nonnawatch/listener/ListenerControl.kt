@@ -1,7 +1,6 @@
 package app.nonnawatch.listener
 
 import android.content.Context
-import app.nonnawatch.core.Room
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -11,10 +10,15 @@ import kotlinx.coroutines.flow.StateFlow
 interface ListenerControl {
     val state: StateFlow<ServiceState>
 
-    /** Only call this while the app is on screen: Android lets only a visible app turn on the mic. */
-    fun start(room: Room)
+    /**
+     * Starts listening with the settings last saved. Only call this while the app is on screen:
+     * Android lets only a visible app turn on the microphone.
+     */
+    fun start()
 
     fun stop()
+
+    fun setPaused(paused: Boolean)
 }
 
 /** The real one: starts and stops [ListenerService]. */
@@ -24,7 +28,11 @@ class ServiceListenerControl(context: Context) : ListenerControl {
 
     override val state: StateFlow<ServiceState> = ServiceStateHolder.state
 
-    override fun start(room: Room) = ListenerService.start(context, room)
+    override fun start() = ListenerService.start(context)
 
     override fun stop() = ListenerService.stop(context)
+
+    override fun setPaused(paused: Boolean) {
+        ServiceStateHolder.paused.value = paused
+    }
 }

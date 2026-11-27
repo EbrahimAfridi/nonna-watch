@@ -1,6 +1,7 @@
-// Shared code for both apps: protocol messages, room ids, later the audio frame encoder.
+// Shared code for both apps: room ids, and the listener ↔ hub protocol (messages, audio frames).
 plugins {
     alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -13,5 +14,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.kotlinx.serialization.json)
+
     testImplementation(libs.junit)
 }
