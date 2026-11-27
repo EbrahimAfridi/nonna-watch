@@ -6,6 +6,8 @@ lifecycle = "2.11.1"
 activityCompose = "1.13.0"
 # 2026.11.01 (Compose 1.13) needs compileSdk 37.1; this one (Compose 1.12.1) works with 37.0.
 composeBom = "2026.09.00"
+# The version lifecycle already pulls in; declared so the listener does not rely on that by accident.
+coroutines = "1.9.0"
 junit = "4.13.2"
 
 [libraries]
@@ -18,6 +20,8 @@ androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
