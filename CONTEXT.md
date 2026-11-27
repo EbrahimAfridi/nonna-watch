@@ -66,7 +66,7 @@ Inside the house (audio never leaves)
   Listener phone(s)  --audio 1 s chunks, WebSocket over Wi-Fi-->  Hub laptop (FastAPI)
   Listener phone(s)  <--"ask: are you okay?" command-----------  Hub
   Hub: YAMNet every second -> Silero VAD -> faster-whisper on speech -> detection rules
-       audio buffer ~1 s in RAM, then discarded. Never written to disk.
+       keeps a few seconds of audio in RAM, then discards it. Never written to disk.
 
 Leaving the house (labels and alerts only, ~150 bytes each)
   Hub  --batched events, heartbeat, alerts-->  Firestore
@@ -153,28 +153,44 @@ only hard rule is that a milestone is not "done" until the test for it passes on
 
 ### Shared first (whoever gets there first, in `docs/`)
 
-- S1. Hub WebSocket + REST contract written down (`docs/api-contract.md`): message types for
-  audio chunk, heartbeat, `ask`, `ask-result`, device registration. Ebrahim writes it; A codes
-  against it with a fake hub if the real one is not ready.
+- S1. Done: `docs/api-contract.md` (protocol 1). Hub WebSocket + REST contract: `hello` /
+  `welcome`, binary audio frames, `heartbeat`, `light`, `ask` / `ask_played`, `set_paused`,
+  `checkin_clip`, REST `/health`, `/devices`, `/ask`. A codes against it.
 - S2. Firestore schema and security rules written down (`docs/firestore-schema.md`). B writes it;
   Ebrahim and A code against it.
 
 ### Track: Edge AI (Ebrahim)
 
-- E1. `uv` project, Python 3.12, YAMNet on the laptop's own mic printing top label + confidence
-  every second.
-- E2. Event merger: consecutive identical labels → one event with start/end; drop `Silence` and
-  confidence < threshold. Unit tests with synthetic label sequences.
+- E1. Done: `hub/` uv project, Python 3.12. `uv run nonna-hub listen [FILE ...]` prints YAMNet's
+  top labels every 0.5 s from the laptop mic or from audio files (see `hub/README.md`).
+- E2. Done: `hub/nonna_hub/categories.py` groups YAMNet labels into 19 household categories (safety:
+  scream, distress, thud, glass, smoke_alarm); `events.py` merges windows into events, and more than
+  1 s without the sound ends one. `listen` and `serve` print events; `listen --raw` prints labels.
+  On 105 ESC-50 clips glass was 3/3 with no false alarm in 34 other classes. ESC-50 has no scream,
+  fall or smoke alarm, so those need our own recordings.
 - E3. Silero VAD → speech segment → faster-whisper per configured language → normalised help-word
-  match → prints `HELP`.
+  match → prints `HELP`. Done: `speech.py` and `help_words.py`; `listen` and `serve` take
+  `--languages it,en,...`. Checked with the Mac's Italian, English, Hindi and Croatian voices,
+  through fake phones to the real server: every help phrase caught, "helpful" ignored. Default
+  help words and the Hindi/Urdu script rule are D24; only help phrases are shown (D25).
 - E4. FastAPI WebSocket server: accepts N phones, each registered with a room; runs E1–E3 on the
-  incoming stream instead of the laptop mic. Audio lives only in a ~1 s RAM buffer.
+  incoming stream instead of the laptop mic. Audio stays in RAM only, a few seconds at most.
+  Done: `nonna-hub serve` implements docs/api-contract.md and runs the events (E2) and help words
+  (E3) on each phone's stream; `nonna-hub fake-phone` streams files or the laptop mic like a
+  phone, so A can test against a real hub.
 - E5. Detection rules (help word, scream, thud + 10 s silence, glass) → Telegram alert with
   room + time. Timestamp log at every hop (captured / hub received / AI done / alert sent).
+  Done: `rules.py` (plus crying and smoke alarm from the table in section 4) and `telegram.py`;
+  `serve` prints each alert with its hops and sends it to Telegram; `telegram-test` checks the
+  bot and finds the group's chat id. Since E7, thud and glass ask first (D26, D27).
 - E6. Firestore sync: batched events every 1–5 min, heartbeat every 5 min, alerts immediately.
   Offline queue: if internet drops, keep working and flush later.
 - E7. Voice check hub side: send `ask` to the phone, listen 30 s for "fine"-words or help words,
   alert on silence or help, follow-up message if she answers after an instant alert.
+  Done: `voice_check.py` and the flow in `server.py`, as the table in section 4 says. Speech
+  while the question plays is ignored; any negation ("non sto bene") never counts as fine; the
+  question is asked in the home's first language (D27). Checked through a fake phone: "aiuto" →
+  alert → "Stai bene?" → "sì, sto bene" → follow-up.
 - E8. Multi-room, smoke alarm, long-running water; hub config from `homes/{id}` settings.
 - E9. If no billing (section 11): the routine / long-silence / offline checks as a 15-minute loop
   inside the hub, using B's logic.
@@ -327,6 +343,27 @@ Three people, three AI assistants. To avoid redundant or diverging work:
 - YAMNet works on ~0.975 s windows; keep a rolling buffer rather than classifying exactly one
   chunk at a time.
 - Python 3.14 does not run TensorFlow. Pin 3.12 with `uv`.
+- faster-whisper 1.2.1 cannot load audio files with PyAV 19 (`unexpected keyword argument
+  'metadata_errors'`). `hub/pyproject.toml` pins `av<17`; keep the pin.
+- Whisper writes spoken Hindi in Devanagari or Urdu script whichever of `hi` / `ur` it is told
+  (a Hindi "बचाओ" came back as "بچاو"), so both help-word lists hold both scripts (D24).
+- Whisper `base` is unreliable for Hindi: the same "बचाओ" clip came back as "بچاو", "بَجَو" or
+  "BAJAU" depending on a few milliseconds of silence around it, and मदद as "मदख". Italian, English
+  and Bosnian were reliable. The English pass often translates other languages ("Upomoć!" →
+  "Help! Help!"), which catches some. Compare `small` for Hindi homes in the experiments.
+- Help words also match ordinary sentences ("grazie per l'aiuto", "can I help you?"), from people
+  or the TV. The 10-minute TV test (section 9) decides whether we add a rule such as "short phrases
+  only", which would also miss "help, I fell and can't get up".
+- Whisper's default retries unsure phrases at a higher temperature, which samples at random, so the
+  same audio gave different words on each run. The hub uses beam search at temperature 0: the same
+  audio always gives the same words.
+- Whisper's first download is 141 MB from Hugging Face and took 9 minutes; do it before the demo,
+  never on the hotspot. Afterwards it loads offline in under a second.
+- The hub needs about 0.5 GB of RAM with Whisper. An 8 GB laptop with a browser and an IDE open was
+  already swapping 7 GB, so close other apps on the demo laptop.
+- YAMNet labels real clips loosely: rain scores `Water` 0.98, normal breathing `Gasp` 0.67, a
+  creaking door `Crying, sobbing` 0.85, a vacuum cleaner `Jet engine`. `hub/nonna_hub/categories.py`
+  says which labels were left out and why; tune its thresholds on our own phone recordings.
 - Streaming 16 kHz 16-bit mono is 32 KB/s ≈ 2.76 GB/day per listener. That number is the
   privacy and bandwidth argument for the edge; measure it in Experiment 2.
 - Citations in the requirements dated 2026 (WHO 842,000, Raspberry Pi $85, ISTAT Feb 2026)
