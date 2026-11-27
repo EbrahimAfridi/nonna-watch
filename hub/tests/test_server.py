@@ -330,3 +330,18 @@ def test_a_thud_alerts_when_the_phone_cannot_ask(classifier, monkeypatch):
         eventually(lambda: sent)
 
     assert "possible fall" in sent[0] and "could not ask the check-in question" in sent[0]
+
+
+def test_a_phone_that_goes_quiet_is_reported_offline_and_back(classifier, monkeypatch):
+    monkeypatch.setattr(server, "OFFLINE_AFTER_MS", 300)
+    monkeypatch.setattr(server, "WATCH_EVERY_S", 0.05)
+    sent = []
+    with hub_hearing(classifier, ScriptedWhisper(), sent) as client:
+        with phone(client):
+            pass
+        eventually(lambda: sent)
+        with phone(client):
+            eventually(lambda: len(sent) == 2)
+
+    assert "The kitchen listener has sent nothing since" in sent[0]
+    assert "The kitchen listener is working again" in sent[1]

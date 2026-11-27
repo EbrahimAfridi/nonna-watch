@@ -83,6 +83,31 @@ def test_a_tv_after_a_thud_does_not_count_as_movement():
     assert [alert.kind for alert in alerts] == ["thud"]
 
 
+def water_for(rules, minutes, start_ms=0, every_ms=HOP_MS):
+    """Water heard every `every_ms` for `minutes`; returns the alerts."""
+    alerts = []
+    for at_ms in range(start_ms, start_ms + minutes * 60_000 + 1, every_ms):
+        alerts += rules.on_window(at_ms, heard("water"))
+    return alerts
+
+
+def test_water_running_for_twenty_minutes_gets_one_notice():
+    alerts = water_for(RoomRules(), minutes=30, start_ms=1_000)
+
+    assert alerts == [Alert("water_running", 1_000)]
+
+
+def test_water_heard_only_now_and_then_still_counts_as_running():
+    assert len(water_for(RoomRules(), minutes=21, every_ms=20_000)) == 1
+
+
+def test_a_pause_in_the_water_starts_the_twenty_minutes_again():
+    rules = RoomRules()
+    alerts = water_for(rules, minutes=15) + water_for(rules, minutes=15, start_ms=16 * 60_000)
+
+    assert alerts == []
+
+
 def test_the_message_names_the_room_and_the_word():
     message = Alert("help_word", 0, "aiuto").message("living_room")
 

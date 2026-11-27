@@ -35,7 +35,8 @@ def main() -> None:
     listen.add_argument("files", nargs="*", type=Path, help="audio files to label instead of the microphone")
 
     serve = commands.add_parser("serve", help="accept listener phones and label their audio")
-    serve.add_argument("--port", type=int, default=8000)
+    # Cloud Run tells the container which port to use through PORT.
+    serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)), help="default: %(default)s")
     serve.add_argument("--languages", type=language_list, default="it,en", help=languages_help)
 
     phone = commands.add_parser("fake-phone", help="stream audio files or the mic to a hub, like a phone")

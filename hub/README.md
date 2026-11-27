@@ -103,6 +103,10 @@ with files never reaches the family. To set Telegram up once:
 
 Without these two settings the hub still runs, and alerts only appear in its console.
 
+Two notices need no sound: a room whose phone sends nothing, not even a heartbeat, for 5 minutes
+is reported offline (and again when it is back), and a tap running for 20 minutes gets a gentle
+note.
+
 ## Voice check
 
 The phone asks "Are you okay?" (in the home's first language, so `Stai bene?` for `--languages
@@ -125,3 +129,28 @@ http://localhost:8000/docs (`POST /ask`), then answer into the laptop mic.
 ```
 uv run pytest
 ```
+
+## Container for Cloud Run (E10)
+
+`hub/Dockerfile` builds the same hub with YAMNet and Whisper inside, so a cold start downloads
+nothing. Cloud Run runs amd64, so on a Mac with Apple Silicon add `--platform linux/amd64`:
+
+```
+cd hub
+docker build --platform linux/amd64 -t nonna-hub .
+docker run --rm -p 8080:8080 -e HUB_TOKEN=<token> nonna-hub
+```
+
+The image holds no secrets: pass `HUB_TOKEN` (and optionally `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHAT_ID`, `HUB_ID`) as environment variables, on Cloud Run through Secret Manager.
+Arguments after the image name replace the default command, for example
+`nonna-hub serve --languages it,en,hi`.
+
+Cloud Run settings that matter for the hub (C8):
+
+- `--memory 1Gi --cpu 2`: the hub needs about 0.5 GB, and Whisper is faster with two CPUs.
+- `--timeout 3600`: Cloud Run cuts a WebSocket after the request timeout (at most 60 min); the
+  listener app reconnects, as the contract says.
+- `--min-instances 0 --max-instances 3` (budget guardrails, section 11 of CONTEXT.md). The first
+  phone after a quiet spell waits for a cold start; Experiment 1 times warm instances.
+- Phones connect to `wss://<service-url>/ws/listener`.
