@@ -6,4 +6,6 @@
     <string name="listening_channel_description">Shown while this phone listens for trouble.</string>
     <string name="listening_notification_title">Listening · %1$s</string>
     <string name="listening_notification_text">Sound is checked and thrown away, never saved.</string>
+    <string name="paused_notification_title">Paused · %1$s</string>
+    <string name="paused_notification_text">The microphone is off until someone taps Resume.</string>
 </resources>

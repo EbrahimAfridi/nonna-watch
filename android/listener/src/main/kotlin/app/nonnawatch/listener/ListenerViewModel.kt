@@ -1,8 +1,14 @@
 package app.nonnawatch.listener
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.nonnawatch.core.Room
+import app.nonnawatch.listener.hub.LinkState
+import app.nonnawatch.listener.settings.ListenerSettings
+import app.nonnawatch.listener.settings.SettingsStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -10,76 +16,136 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 
-/** Everything the listener screen shows. The screen only draws this; it decides nothing. */
+/** Everything the listener screen shows, apart from the two text fields. */
 data class ListenerUiState(
     val room: Room = Room.KITCHEN,
     val listening: Boolean = false,
+    val paused: Boolean = false,
+    /** The microphone, or why the phone is not listening. */
     val status: String = NOT_LISTENING,
+    /** The link to the hub; empty while not listening. */
+    val hubStatus: String = "",
 )
 
 /**
  * MVVM: the ViewModel holds the state and survives screen rotation; the screen sends events
  * (like [selectRoom] or [start]) and redraws when [state] changes.
  *
- * The service keeps running when the screen closes, so whether we are listening comes from
- * [control], not from here. Only the room picked before starting lives in the ViewModel.
+ * The service keeps running when the screen closes, so what the phone is doing comes from
+ * [control]. The settings come from [settings] and are saved as soon as they change.
  */
-class ListenerViewModel(private val control: ListenerControl) : ViewModel() {
-    private val choices = MutableStateFlow(Choices())
+class ListenerViewModel(
+    private val control: ListenerControl,
+    private val settings: SettingsStore,
+) : ViewModel() {
 
-    val state: StateFlow<ListenerUiState> = combine(choices, control.state, ::toUiState)
-        .stateIn(
-            viewModelScope,
-            SharingStarted.Eagerly,
-            toUiState(choices.value, control.state.value),
-        )
+    private val saved = settings.load()
 
-    /** The room is sent to the hub when listening starts, so it cannot change while listening. */
+    // The two text fields read these directly: a Compose text field needs its text updated at
+    // once, which a flow cannot promise.
+    var hubUrl by mutableStateOf(saved.hubUrl)
+        private set
+    var token by mutableStateOf(saved.token)
+        private set
+
+    private val form = MutableStateFlow(Form(room = saved.room))
+
+    val state: StateFlow<ListenerUiState> = combine(form, control.state, ::toUiState)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, toUiState(form.value, control.state.value))
+
+    // The hub learns the room, address and token once, when the phone connects, so none of them
+    // can change while listening.
     fun selectRoom(room: Room) {
-        if (!state.value.listening) choices.update { it.copy(room = room) }
+        if (state.value.listening) return
+        form.update { it.copy(room = room) }
+        saveEdit()
+    }
+
+    fun editHubUrl(text: String) {
+        if (state.value.listening) return
+        hubUrl = text
+        saveEdit()
+    }
+
+    fun editToken(text: String) {
+        if (state.value.listening) return
+        token = text
+        saveEdit()
+    }
+
+    /**
+     * Checks the settings before Android is asked for the microphone. On false the status says
+     * what is missing.
+     */
+    fun readyToStart(): Boolean {
+        if (state.value.listening) return false
+        val problem = currentSettings().problem()
+        form.update { it.copy(notice = problem?.let { "$NOT_LISTENING: $it" }) }
+        return problem == null
     }
 
     /** Call once the microphone permission is granted. */
     fun start() {
         if (state.value.listening) return
-        choices.update { it.copy(micPermissionDenied = false) }
-        control.start(choices.value.room)
+        form.update { it.copy(notice = null) }
+        control.start()
     }
 
     fun stop() = control.stop()
 
+    fun togglePause() {
+        if (state.value.listening) control.setPaused(!state.value.paused)
+    }
+
     fun micPermissionDenied() {
-        choices.update { it.copy(micPermissionDenied = true) }
+        form.update { it.copy(notice = MIC_PERMISSION_DENIED) }
+    }
+
+    private fun currentSettings() = ListenerSettings(hubUrl, token, form.value.room)
+
+    /** Saves at once, and clears an old message such as "enter the token". */
+    private fun saveEdit() {
+        settings.save(currentSettings())
+        form.update { it.copy(notice = null) }
     }
 }
 
-/** What the person chose on this screen, as opposed to what the service is doing. */
-private data class Choices(
-    val room: Room = Room.KITCHEN,
-    val micPermissionDenied: Boolean = false,
+/** What the person chose on this screen, apart from the text fields. */
+private data class Form(
+    val room: Room,
+    /** A message for the person, such as a missing setting or a refused permission. */
+    val notice: String? = null,
 )
 
-private fun toUiState(choices: Choices, service: ServiceState): ListenerUiState = when (service) {
+private fun toUiState(form: Form, service: ServiceState): ListenerUiState = when (service) {
     is ServiceState.Stopped -> ListenerUiState(
-        room = choices.room,
+        room = form.room,
         listening = false,
-        status = when {
-            choices.micPermissionDenied -> MIC_PERMISSION_DENIED
-            service.problem != null -> "$NOT_LISTENING: ${service.problem}"
-            else -> NOT_LISTENING
-        },
+        status = form.notice ?: service.problem?.let { "$NOT_LISTENING: $it" } ?: NOT_LISTENING,
     )
-    is ServiceState.Listening -> ListenerUiState(
+    is ServiceState.Running -> ListenerUiState(
         room = service.room,
         listening = true,
-        status = "Listening · ${formatDuration(service.secondsRecorded)} recorded · " +
-            "level ${service.levelPercent} %",
+        paused = service.mic is MicState.Paused,
+        status = micStatus(service.mic),
+        hubStatus = hubStatus(service.hub),
     )
-    is ServiceState.MicProblem -> ListenerUiState(
-        room = service.room,
-        listening = true,
-        status = "Microphone problem: ${service.message}. Trying again…",
-    )
+}
+
+private fun micStatus(mic: MicState): String = when (mic) {
+    is MicState.Recording ->
+        "Listening · ${formatDuration(mic.secondsRecorded)} recorded · level ${mic.levelPercent} %"
+    MicState.Paused -> "Paused: the microphone is off"
+    is MicState.Problem -> "Microphone problem: ${mic.message}. Trying again…"
+}
+
+private fun hubStatus(hub: LinkState): String = when (hub) {
+    LinkState.Connecting -> "Hub: connecting…"
+    is LinkState.Connected -> {
+        val name = hub.hubId.ifBlank { "the hub" }
+        "Hub: connected to $name · ${formatDuration(hub.secondsSent)} sent"
+    }
+    is LinkState.Waiting -> "Hub: ${hub.reason}. Trying again in ${hub.retryInSeconds} s"
 }
 
 /** "42 s", "3 min 5 s", "1 h 2 min": readable during the one-hour screen-off test (M2). */
