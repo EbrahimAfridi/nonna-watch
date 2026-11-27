@@ -1,3 +1,9 @@
 <resources>
     <string name="app_name">Nonna Listener</string>
+
+    <!-- The notification Android requires while the microphone service runs. -->
+    <string name="listening_channel_name">Listening</string>
+    <string name="listening_channel_description">Shown while this phone listens for trouble.</string>
+    <string name="listening_notification_title">Listening · %1$s</string>
+    <string name="listening_notification_text">Sound is checked and thrown away, never saved.</string>
 </resources>
