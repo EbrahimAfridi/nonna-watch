@@ -41,3 +41,16 @@ cloud/terraform/.terraform/
 # OS / editors
 .DS_Store
 .vscode/
+
+# Node (Firebase emulator, rules tests)
+node_modules/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# Local secrets folder (service-account key, bot token)
+secrets/
+cloud/secrets/
+
+# Experiment run logs
+experiments/hub.log

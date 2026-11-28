@@ -1,0 +1,33 @@
+[project]
+name = "nonna-experiments"
+version = "0.1.0"
+description = "Nonna Watch experiments: timing, data volume, battery, CPU, accuracy, charts (C7)"
+authors = [
+    { name = "farahpiralic", email = "115026248+farahpiralic@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "nonna-cloud",
+    "psutil>=7.2.2",
+]
+
+[project.optional-dependencies]
+whisper = [
+    "faster-whisper>=1.2.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.10,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "nonna_exp"
+
+[tool.uv.sources]
+nonna-cloud = { path = "../cloud", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]

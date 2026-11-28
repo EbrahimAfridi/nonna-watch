@@ -1,0 +1,21 @@
+[project]
+name = "nonna-cloud"
+version = "0.1.0"
+description = "Nonna Watch cloud side: seed data, routine learner and checks (runs in the hub or as a Cloud Function)"
+authors = [
+    { name = "farahpiralic", email = "115026248+farahpiralic@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "google-cloud-firestore>=2.34.1",
+    "tzdata>=2026.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.10,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
