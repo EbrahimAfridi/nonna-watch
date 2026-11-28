@@ -76,6 +76,22 @@ fun heartbeatMessage(tsMs: Long, batteryPct: Int, charging: Boolean, paused: Boo
         ),
     )
 
+/** How light the room is, as the `light` message names it. */
+enum class LightState(val wire: String) {
+    DARK("dark"),
+    BRIGHT("bright"),
+}
+
+/**
+ * Only when the room changes from dark to bright or back, not for every reading. [lux] is the
+ * reading that made the change. The hub refuses a negative lux, and JSON has no "not a number".
+ */
+fun lightMessage(tsMs: Long, state: LightState, lux: Float): String =
+    json.encodeToString(
+        LightJson.serializer(),
+        LightJson(tsMs = tsMs, state = state.wire, lux = if (lux.isFinite()) lux.coerceAtLeast(0f) else 0f),
+    )
+
 /** After the check-in question has played: when it started and ended, in this phone's clock. */
 fun askPlayedMessage(askId: String, startedMs: Long, endedMs: Long): String =
     json.encodeToString(
@@ -171,6 +187,14 @@ private data class HeartbeatJson(
     @SerialName("battery_pct") val batteryPct: Int,
     val charging: Boolean,
     val paused: Boolean,
+)
+
+@Serializable
+private data class LightJson(
+    val type: String = "light",
+    @SerialName("ts_ms") val tsMs: Long,
+    val state: String,
+    val lux: Float,
 )
 
 @Serializable

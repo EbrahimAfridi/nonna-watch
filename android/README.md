@@ -30,8 +30,8 @@ On a Mac: `JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Hom
 Fill in the hub settings (next section), pick the room, tap **Start listening** and allow the
 microphone (and notifications, on Android 13+). A notification "Listening · Kitchen" appears and
 stays while the phone listens; it is Android's rule that a microphone in the background is always
-visible. The status line counts the seconds recorded and shows how loud the last second was (0 to
-100 %).
+visible. The status line counts the seconds recorded; under it, a drawing shows how loud each
+second of the last minute was (A4, below).
 
 - Audio is recorded as the hub expects it: 16 kHz, mono, 16-bit, in one-second chunks, with the
   `VOICE_RECOGNITION` source so the phone does not boost a quiet room.
@@ -87,8 +87,8 @@ The second status line shows the link to the hub:
   another phone takes over the same room, or when the hub rejects the hello. Fix the setting and
   tap Start again.
 
-**Pause** turns the microphone off; the link and the heartbeats stay, so the hub shows the room
-as paused, not offline. The family can pause and resume from the hub too.
+**Pause** turns the microphone and the light sensor off; the link and the heartbeats stay, so the
+hub shows the room as paused, not offline. The family can pause and resume from the hub too.
 
 ### Connecting the emulator to a hub on the same PC
 
@@ -106,6 +106,51 @@ microphone uses host audio input**. On Windows, also allow it under Settings →
 
 The emulator is for development only. For the demo, never run it on the hub laptop (D12); use real
 phones.
+
+## Listener: sound level and light (A4)
+
+**The level drawing** (the form's "2D graphics" item) is drawn with Compose's Canvas under the
+status line: one bar per second for the last minute, newest on the right, taller when louder. A
+silent second is a thin line, so an empty box means no audio is arriving at all. The bars use a
+decibel scale (the top 60 dB): a quiet room fills about a third, speech near the phone about three
+quarters. Only these 60 numbers are kept, never the sound. After a pause the drawing starts empty.
+
+**The light sensor** (the form's "MEMS sensor" item, D13) is the one next to the screen that
+auto-brightness uses. While the phone listens, the line `Light: bright · 112 lux` shows its
+reading, and each change goes to the hub as a `light` message (docs/api-contract.md):
+
+- **dark** below 10 lux, **bright** above 30 lux. In between nothing changes, so a lamp near a
+  limit does not flicker between the two.
+- Only changes are sent. The first reading after Start (or after a pause) only sets the state:
+  the light was already on or off, so the hub gets no "light on" for it.
+- The message has the time of the change. The hub prints
+  `kitchen      light dark (3 lux) at 03:12:40.5`.
+- A change while the hub cannot be reached is dropped for now; A5 keeps it and sends it later.
+- No permission is needed. A phone without a light sensor still listens; the line says so.
+
+Known limits:
+
+- The hub only prints light changes so far; they do not reach Firestore or the family app yet
+  (edge track).
+- Some phones turn the light sensor off with the screen. Check on each listener phone (below).
+- A hand passing over the phone counts as dark and then bright again.
+
+### Test the level drawing and the light on the emulator
+
+1. Turn on the emulator's microphone (above), start listening, and talk: the bars grow while you
+   speak. Silence gives thin lines.
+2. In the emulator's **⋯** → **Virtual sensors** → **Additional sensors**, move **Light** to 200,
+   then to 3, then to 20, then to 100. The light line follows each move. With the hub connected
+   it prints `light dark` at 3, nothing at 20 (between the limits) and `light bright` at 100; at
+   200 it prints `light bright` only if the slider started below 20.
+3. Tap **Pause**: the drawing and the light line go away. Moving the slider now sends nothing.
+
+### Test the light on a real phone
+
+With the hub running, cover the sensor (top edge, near the front camera) with a finger: the hub
+prints `light dark`; take the finger away: `light bright`. Then press the power button to turn the
+screen off, wait 10 s, and cover and uncover the sensor again. If the hub prints nothing, that
+phone stops the sensor with the screen off; note it for the report.
 
 ## Listener: the check-in question (A6)
 

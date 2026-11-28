@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- The partial WakeLock and the WifiLock that keep listening going with the screen off. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The light sensor (A4) needs no permission. Not required: without one the app still
+         listens, and the screen says the phone has no light sensor. -->
+    <uses-feature android:name="android.hardware.sensor.light" android:required="false" />
 
     <!-- usesCleartextTraffic: the hub on the home network is plain ws://, which Android blocks by
          default (docs/api-contract.md, "Known limits"). The Cloud Run copy uses wss://. -->

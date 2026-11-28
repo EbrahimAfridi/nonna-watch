@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.nonnawatch.core.Room
 import app.nonnawatch.listener.hub.LinkState
+import app.nonnawatch.listener.light.LightStatus
 import app.nonnawatch.listener.settings.ListenerSettings
 import app.nonnawatch.listener.settings.SettingsStore
 import app.nonnawatch.listener.voice.AskResult
@@ -31,8 +32,12 @@ data class ListenerUiState(
     val paused: Boolean = false,
     /** The microphone, or why the phone is not listening. */
     val status: String = NOT_LISTENING,
+    /** How loud the last seconds were, for the level drawing; null hides it (not recording). */
+    val micLevels: List<Float>? = null,
     /** The link to the hub; empty while not listening. */
     val hubStatus: String = "",
+    /** The light sensor; empty while not listening or paused. */
+    val lightStatus: String = "",
     /** The last check-in question the hub asked for; empty until it asks. */
     val questionStatus: String = "",
     /** The language the Test button speaks in. */
@@ -160,7 +165,9 @@ class ListenerViewModel(
                 listening = true,
                 paused = service.mic is MicState.Paused,
                 status = micStatus(service.mic),
+                micLevels = (service.mic as? MicState.Recording)?.levels,
                 hubStatus = hubStatus(service.hub),
+                lightStatus = service.light?.let(::lightStatus).orEmpty(),
                 questionStatus = service.question?.let(::questionStatus).orEmpty(),
             )
         }
@@ -222,11 +229,17 @@ internal fun tenthsOfSeconds(ms: Long): String {
 
 private val CLOCK_TIME = DateTimeFormatter.ofPattern("HH:mm:ss")
 
+// The level is drawn under this line (MicLevelChart), so the line no longer gives it as a number.
 private fun micStatus(mic: MicState): String = when (mic) {
-    is MicState.Recording ->
-        "Listening · ${formatDuration(mic.secondsRecorded)} recorded · level ${mic.levelPercent} %"
-    MicState.Paused -> "Paused: the microphone is off"
+    is MicState.Recording -> "Listening · ${formatDuration(mic.secondsRecorded)} recorded"
+    MicState.Paused -> "Paused: the microphone and the light sensor are off"
     is MicState.Problem -> "Microphone problem: ${mic.message}. Trying again…"
+}
+
+private fun lightStatus(light: LightStatus): String = when (light) {
+    LightStatus.Waiting -> "Light: waiting for the sensor…"
+    LightStatus.NoSensor -> "Light: this phone has no light sensor"
+    is LightStatus.Reading -> "Light: ${light.state.wire} · ${light.lux} lux"
 }
 
 private fun hubStatus(hub: LinkState): String = when (hub) {
