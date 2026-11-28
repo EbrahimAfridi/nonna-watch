@@ -24,3 +24,5 @@ part running in 15 minutes.
 
 - Hub: [hub/README.md](hub/README.md)
 - Android: [android/README.md](android/README.md)
+- Cloud: [cloud/README.md](cloud/README.md)
+- Experiments: [experiments/README.md](experiments/README.md)

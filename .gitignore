@@ -51,3 +51,6 @@ ui-debug.log
 # Local secrets folder (service-account key, bot token)
 secrets/
 cloud/secrets/
+
+# Experiment run logs
+experiments/hub.log
