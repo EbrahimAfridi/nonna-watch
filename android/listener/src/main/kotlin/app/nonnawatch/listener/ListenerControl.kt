@@ -1,6 +1,9 @@
 package app.nonnawatch.listener
 
 import android.content.Context
+import app.nonnawatch.listener.voice.AskResult
+import app.nonnawatch.listener.voice.QuestionLanguage
+import app.nonnawatch.listener.voice.androidCheckInQuestion
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -19,6 +22,12 @@ interface ListenerControl {
     fun stop()
 
     fun setPaused(paused: Boolean)
+
+    /**
+     * Speaks the check-in question in [language] with the phone's own voice, as an alarm, and
+     * returns how it went. Works without a hub and while not listening.
+     */
+    suspend fun testQuestion(language: QuestionLanguage): AskResult
 }
 
 /** The real one: starts and stops [ListenerService]. */
@@ -35,4 +44,8 @@ class ServiceListenerControl(context: Context) : ListenerControl {
     override fun setPaused(paused: Boolean) {
         ServiceStateHolder.paused.value = paused
     }
+
+    override suspend fun testQuestion(language: QuestionLanguage): AskResult =
+        androidCheckInQuestion(context, speechFileName = "test_question.wav")
+            .test(language.text, language.tag)
 }

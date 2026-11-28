@@ -2,6 +2,7 @@ package app.nonnawatch.listener
 
 import app.nonnawatch.core.Room
 import app.nonnawatch.listener.hub.LinkState
+import app.nonnawatch.listener.voice.QuestionState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -11,8 +12,16 @@ sealed interface ServiceState {
     /** Not listening. [problem] says why, if the service stopped by itself. */
     data class Stopped(val problem: String? = null) : ServiceState
 
-    /** Listening in [room]: what the microphone and the link to the hub are doing. */
-    data class Running(val room: Room, val mic: MicState, val hub: LinkState) : ServiceState
+    /**
+     * Listening in [room]: what the microphone and the link to the hub are doing, and the last
+     * check-in question the hub asked for ([question] is null until it asks).
+     */
+    data class Running(
+        val room: Room,
+        val mic: MicState,
+        val hub: LinkState,
+        val question: QuestionState? = null,
+    ) : ServiceState
 }
 
 sealed interface MicState {

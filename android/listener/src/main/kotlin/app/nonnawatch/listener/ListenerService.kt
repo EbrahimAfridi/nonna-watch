@@ -34,6 +34,7 @@ import app.nonnawatch.listener.hub.deviceModel
 import app.nonnawatch.listener.hub.hubHttpClient
 import app.nonnawatch.listener.settings.ListenerSettings
 import app.nonnawatch.listener.settings.PrefsSettingsStore
+import app.nonnawatch.listener.voice.androidCheckInQuestion
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +58,10 @@ import kotlinx.coroutines.launch
  * WifiLock (Wi-Fi does not go to sleep), as docs/api-contract.md asks.
  *
  * Each second of audio goes to the hub through [HubLink] and is then dropped; nothing is saved.
+ *
+ * When the hub asks, the check-in question plays from here too. Android 17 lets a background app
+ * play sound only from a foreground service the person started while the app was on screen, which
+ * this one is (the Start button).
  */
 class ListenerService : Service() {
 
@@ -109,6 +114,7 @@ class ListenerService : Service() {
     private fun startListening(settings: ListenerSettings) {
         holdLocks()
         val paused = ServiceStateHolder.paused.apply { value = false }
+        val voiceCheck = androidCheckInQuestion(this, speechFileName = "question.wav", log = { Log.i(TAG, it) })
         val link = HubLink(
             config = HubConfig(
                 url = settings.hubUrl,
@@ -121,14 +127,15 @@ class ListenerService : Service() {
             sockets = OkHttpHubSockets(httpClient),
             paused = paused,
             battery = ::readBattery,
+            voiceCheck = voiceCheck,
             log = { Log.i(TAG, it) },
         )
         val mic = MutableStateFlow<MicState>(MicState.Recording(secondsRecorded = 0, levelPercent = 0))
 
         running = scope.launch {
             launch {
-                combine(mic, link.state) { micState, hubState ->
-                    ServiceState.Running(settings.room, micState, hubState)
+                combine(mic, link.state, voiceCheck.state) { micState, hubState, question ->
+                    ServiceState.Running(settings.room, micState, hubState, question)
                 }.collect { ServiceStateHolder.set(it) }
             }
             launch {

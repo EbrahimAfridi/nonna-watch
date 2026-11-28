@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.nonnawatch.core.Room
 import app.nonnawatch.listener.settings.PrefsSettingsStore
+import app.nonnawatch.listener.voice.QuestionLanguage
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,6 +85,7 @@ fun ListenerScreen(viewModel: ListenerViewModel) {
         Text("Nonna Watch listener", style = MaterialTheme.typography.headlineSmall)
         Text("Status: ${state.status}")
         if (state.hubStatus.isNotEmpty()) Text(state.hubStatus)
+        if (state.questionStatus.isNotEmpty()) Text(state.questionStatus)
 
         if (state.listening) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -129,6 +132,26 @@ fun ListenerScreen(viewModel: ListenerViewModel) {
                 enabled = !state.listening,
             )
         }
+
+        Text("Check-in question", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "When the hub asks, the phone plays the family's recording, or speaks the question " +
+                "itself, as an alarm. Test that it has a voice for the home's language:",
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            QuestionLanguage.entries.forEach { language ->
+                FilterChip(
+                    selected = language == state.testLanguage,
+                    onClick = { viewModel.selectTestLanguage(language) },
+                    label = { Text(language.label) },
+                    enabled = !state.testing,
+                )
+            }
+        }
+        OutlinedButton(onClick = viewModel::testQuestion, enabled = !state.testing) {
+            Text("Test the question")
+        }
+        if (state.testStatus.isNotEmpty()) Text(state.testStatus)
     }
 }
 

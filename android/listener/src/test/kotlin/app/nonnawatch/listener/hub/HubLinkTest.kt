@@ -1,11 +1,18 @@
 package app.nonnawatch.listener.hub
 
 import app.nonnawatch.core.Room
+import app.nonnawatch.core.protocol.askNotPlayedMessage
+import app.nonnawatch.core.protocol.askPlayedMessage
 import app.nonnawatch.core.protocol.heartbeatMessage
 import app.nonnawatch.core.protocol.helloMessage
 import app.nonnawatch.listener.audio.AudioChunk
+import app.nonnawatch.listener.voice.AskResult
+import app.nonnawatch.listener.voice.NotPlayedReason
+import app.nonnawatch.listener.voice.VoiceCheck
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -80,7 +87,35 @@ class HubLinkTest {
             FakeSocket(url, token, events).also { opened += it }
     }
 
+    /** Plays nothing: a question "plays" until the test completes [result]. */
+    private class FakeVoiceCheck : VoiceCheck {
+        val asked = mutableListOf<Pair<String, String>>()
+        val result = CompletableDeferred<AskResult>()
+        var stopped = false
+        val savedClips = mutableListOf<ByteArray>()
+        var deletes = 0
+
+        override suspend fun ask(text: String, lang: String): AskResult {
+            asked += text to lang
+            try {
+                return result.await()
+            } catch (e: CancellationException) {
+                stopped = true
+                throw e
+            }
+        }
+
+        override suspend fun saveClip(audio: ByteArray) {
+            savedClips += audio
+        }
+
+        override suspend fun deleteClip() {
+            deletes += 1
+        }
+    }
+
     private val sockets = FakeSockets()
+    private val voiceCheck = FakeVoiceCheck()
     private val paused = MutableStateFlow(false)
     private val config = HubConfig(
         url = "ws://10.0.2.2:8000/ws/listener",
@@ -95,6 +130,7 @@ class HubLinkTest {
         sockets = sockets,
         paused = paused,
         battery = { BatteryReading(percent = 87, charging = true) },
+        voiceCheck = voiceCheck,
         clock = { NOW },
         jitter = { 1.0 },
     )
@@ -378,15 +414,107 @@ class HubLinkTest {
         connect()
         val socket = sockets.last
 
-        socket.hubSays("""{"type": "ask", "ask_id": "kitchen-1", "reason": "thud", "text": "Stai bene?", "lang": "it-IT"}""")
-        socket.hubSays("""{"type": "checkin_clip", "clip_id": null}""")
         socket.hubSays("""{"type": "error", "code": "bad_frame", "message": "frame must be 32012 bytes, got 32010"}""")
         socket.hubSays("""{"type": "something_new"}""")
+        socket.hubSays("""{"type": "ask", "text": "Stai bene?", "lang": "it-IT"}""") // no id to answer to
         socket.hubSays("not json")
         runCurrent()
 
         assertEquals(LinkState.Connected("test-hub", secondsSent = 0), link.state.value)
         assertEquals(1, sockets.opened.size)
+        assertTrue(voiceCheck.asked.isEmpty())
+        assertEquals(listOf(heartbeat(paused = false)), socket.texts.drop(1)) // only hello and a heartbeat
+    }
+
+    @Test
+    fun anAskPlaysTheQuestionAndTellsTheHubWhenItEnded() = runTest {
+        connect()
+        val socket = sockets.last
+
+        socket.hubSays(ASK)
+        runCurrent()
+        assertEquals(listOf("Mamma, stai bene?" to "it-IT"), voiceCheck.asked)
+        assertTrue(socket.texts.none { it.contains("ask_played") }) // still playing
+
+        voiceCheck.result.complete(AskResult.Played(startedMs = 1_795_698_192_400L, endedMs = 1_795_698_195_900L))
+        runCurrent()
+
+        assertEquals(
+            askPlayedMessage("kitchen-1795698192000", startedMs = 1_795_698_192_400L, endedMs = 1_795_698_195_900L),
+            socket.texts.last(),
+        )
+    }
+
+    @Test
+    fun aQuestionThatCouldNotPlayIsReportedSoTheHubAlertsAtOnce() = runTest {
+        connect()
+
+        sockets.last.hubSays(ASK)
+        voiceCheck.result.complete(AskResult.NotPlayed(NotPlayedReason.NO_VOICE_FOR_LANGUAGE))
+        runCurrent()
+
+        assertEquals(
+            askNotPlayedMessage("kitchen-1795698192000", reason = "no_voice_for_language"),
+            sockets.last.texts.last(),
+        )
+    }
+
+    @Test
+    fun audioAndHeartbeatsKeepGoingWhileTheQuestionPlays() = runTest {
+        connect()
+        val socket = sockets.last
+        socket.hubSays(ASK)
+        runCurrent()
+
+        repeat(3) { link.send(chunk()) }
+        advanceTimeBy(30_000)
+        runCurrent()
+
+        assertEquals(listOf(0, 1, 2), socket.frames.map(::seqOf)) // the hub hears the answer
+        assertEquals(2, socket.heartbeats.size)
+        assertFalse(voiceCheck.stopped)
+    }
+
+    @Test
+    fun aSecondAskWhileOneIsPlayingIsAnsweredBusy() = runTest {
+        connect()
+        val socket = sockets.last
+        socket.hubSays(ASK)
+        runCurrent()
+
+        socket.hubSays(ASK.replace("kitchen-1795698192000", "kitchen-2"))
+        runCurrent()
+
+        assertEquals(1, voiceCheck.asked.size)
+        assertEquals(askNotPlayedMessage("kitchen-2", reason = "busy"), socket.texts.last())
+    }
+
+    @Test
+    fun losingTheConnectionStopsTheQuestion() = runTest {
+        connect()
+        val first = sockets.last
+        first.hubSays(ASK)
+        runCurrent()
+
+        first.hub(SocketEvent.Failed(httpCode = null, message = "Software caused connection abort"))
+        runCurrent()
+
+        assertTrue(voiceCheck.stopped)
+        assertTrue(first.texts.none { it.contains("ask_played") })
+    }
+
+    @Test
+    fun theFamilysRecordingIsSavedAndANullOneDeletesIt() = runTest {
+        connect()
+        val socket = sockets.last
+
+        socket.hubSays("""{"type": "checkin_clip", "clip_id": "3", "mime": "audio/mp4", "data_b64": "AAAAIGZ0eXBNNEEg"}""")
+        runCurrent()
+        assertEquals(12, voiceCheck.savedClips.single().size) // 16 base64 characters are 12 bytes
+
+        socket.hubSays("""{"type": "checkin_clip", "clip_id": null}""")
+        runCurrent()
+        assertEquals(1, voiceCheck.deletes)
     }
 
     @Test
@@ -405,5 +533,8 @@ class HubLinkTest {
 
     private companion object {
         const val NOW = 1_795_698_222_000L
+
+        /** The contract's example ask. */
+        const val ASK = """{"type": "ask", "ask_id": "kitchen-1795698192000", "reason": "thud", "text": "Mamma, stai bene?", "lang": "it-IT"}"""
     }
 }
