@@ -10,6 +10,8 @@ dependencies = [
     "av<17",
     "fastapi>=0.165.0",
     "faster-whisper>=1.2.1",
+    "google-cloud-firestore>=2.34.1",
+    "nonna-cloud",
     "numpy",
     "sounddevice>=0.5",
     "starlette>=1.10.0",
@@ -32,3 +34,6 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = ""
+
+[tool.uv.sources]
+nonna-cloud = { path = "../cloud", editable = true }

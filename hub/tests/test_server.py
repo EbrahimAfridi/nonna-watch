@@ -1,19 +1,30 @@
 import time
 import uuid
+from datetime import UTC, datetime
 from contextlib import contextmanager
 
 import numpy as np
 import pytest
-from fakes import FakeWhisper, ScriptedWhisper, ThudInWindows, loud_parts
+from fakes import (
+    FakeChecker,
+    FakeFirestore,
+    FakeWhisper,
+    HearsEverywhere,
+    ScriptedWhisper,
+    ThudInWindows,
+    loud_parts,
+)
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from nonna_hub import server
+from nonna_hub.cloud_sync import CloudSync
 from nonna_hub.help_words import DEFAULT_HELP_WORDS
 from nonna_hub.protocol import encode_frame, now_ms
 from nonna_hub.server import Hub, create_app
 from nonna_hub.sound import SoundClassifier
 from nonna_hub.speech import SpeechListener
+from nonna_cloud.routine import Finding
 
 TOKEN = "test-token-0123456789"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -226,7 +237,7 @@ def test_a_room_runs_one_voice_check_at_a_time(client, monkeypatch):
 
 
 @contextmanager
-def hub_hearing(classifier, whisper, sent, categorizer=None):
+def hub_hearing(classifier, whisper, sent, categorizer=None, sync=None, checker=None):
     hub = Hub(
         TOKEN,
         "test-hub",
@@ -234,6 +245,8 @@ def hub_hearing(classifier, whisper, sent, categorizer=None):
         lambda: SpeechListener(whisper, ["it"], DEFAULT_HELP_WORDS, find_speech=loud_parts),
         send_alert=sent.append,
         checkin_language="it",
+        sync=sync,
+        checker=checker,
     )
     if categorizer:
         hub.categorizer = categorizer
@@ -345,3 +358,156 @@ def test_a_phone_that_goes_quiet_is_reported_offline_and_back(classifier, monkey
 
     assert "The kitchen listener has sent nothing since" in sent[0]
     assert "The kitchen listener is working again" in sent[1]
+
+
+def test_the_alert_its_voice_check_and_the_heartbeat_reach_firestore(classifier):
+    db = FakeFirestore()
+    sync = CloudSync(db, "maria")
+    sent = []
+    whisper = ScriptedWhisper("Aiuto!", "Stai bene?", "Sì, sto bene.")
+    start = now_ms()
+    with hub_hearing(classifier, whisper, sent, sync=sync) as client, phone(client) as websocket:
+        [ask] = stream(websocket, start, [0.5, 0])
+        stream(websocket, start, [0.5, 0], first_seq=2)
+        played(websocket, ask, start, ended_after_s=3)
+        stream(websocket, start, [0.5, 0], first_seq=4)
+        eventually(lambda: len(sent) == 2)
+    sync.flush(10)
+
+    alert_path = f"homes/maria/alerts/help_word_kitchen_{start + 1000}"
+    alert_writes = [(data, merge) for path, data, merge in db.writes if path == alert_path]
+    created, *updates = alert_writes
+    assert created[0]["voiceCheck"] == {"asked": True, "result": "pending"}
+    assert created[0]["timings"]["capturedMs"] == start + 1000
+    assert any("alertSentMs" in data.get("timings", {}) for data, _ in updates)
+    [answer] = [data for data, _ in updates if "voiceCheck" in data]
+    assert answer["voiceCheck"] == {"asked": True, "result": "fine"} and '"sto bene"' in answer["followUp"]
+    assert any(path == "homes/maria/devices/hub" and data["kind"] == "hub" for path, data, _ in db.writes)
+
+
+def routine_finding(kind, room):
+    return Finding(
+        type=kind,
+        room=room,
+        time=datetime.now(UTC),
+        message=f"Nonna Watch: {kind} in the {room or 'home'}.",
+        alert_id=f"{kind}_{room}_test",
+        voice_check=True,
+    )
+
+
+def wait_for_line(capsys, text):
+    seen = []
+    eventually(lambda: seen.append(capsys.readouterr().out) or text in "".join(seen))
+
+
+def test_a_routine_finding_answered_sto_bene_is_not_reported(classifier, monkeypatch, capsys):
+    monkeypatch.setattr(server, "ROUTINE_EVERY_S", 0.05)
+    monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.5)
+    checker = FakeChecker(routine_finding("routine_missing", "kitchen"))
+    sent = []
+    start = now_ms()
+    with hub_hearing(classifier, ScriptedWhisper("Sto bene"), sent, checker=checker) as client:
+        with phone(client) as websocket:
+            ask = websocket.receive_json()
+            played(websocket, ask, start, ended_after_s=0)
+            stream(websocket, start, [0.5, 0], first_seq=1)
+            wait_for_line(capsys, "routine_missing: fine, not reported")
+
+    assert ask["reason"] == "routine_missing"
+    assert (checker.reported, sent) == ([], [])
+
+
+def test_a_routine_finding_without_an_answer_is_reported_and_sent(classifier, monkeypatch):
+    monkeypatch.setattr(server, "ROUTINE_EVERY_S", 0.05)
+    monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.2)
+    finding = routine_finding("routine_missing", "kitchen")
+    checker = FakeChecker(finding)
+    sent = []
+    start = now_ms()
+    with hub_hearing(classifier, ScriptedWhisper(), sent, checker=checker) as client, phone(client) as websocket:
+        played(websocket, websocket.receive_json(), start, ended_after_s=0)
+        eventually(lambda: sent)
+
+    assert checker.reported == [("routine_missing", "kitchen", "no_answer")]
+    assert sent == [finding.message]
+
+
+def test_a_silent_home_with_no_phone_to_ask_is_reported_at_once(classifier, monkeypatch):
+    monkeypatch.setattr(server, "ROUTINE_EVERY_S", 0.05)
+    checker = FakeChecker(routine_finding("long_silence", ""))
+    sent = []
+    with hub_hearing(classifier, ScriptedWhisper(), sent, checker=checker):
+        eventually(lambda: sent)
+
+    assert checker.reported == [("long_silence", "", None)]
+
+
+def stored_events(db):
+    return [path for path, _, _ in db.writes if "/events/" in path]
+
+
+def test_a_sound_in_the_home_is_stored_as_an_event(classifier):
+    db = FakeFirestore()
+    sync = CloudSync(db, "maria")
+    with hub_hearing(classifier, ScriptedWhisper(), [], HearsEverywhere("speech"), sync) as client:
+        with phone(client) as websocket:
+            stream(websocket, now_ms(), [0, 0])
+    sync.flush(10)
+
+    assert len(stored_events(db)) == 1 and stored_events(db)[0].endswith("_speech")
+
+
+def test_the_phone_playing_the_question_is_not_stored_as_activity(classifier):
+    db = FakeFirestore()
+    sync = CloudSync(db, "maria")
+    with hub_hearing(classifier, ScriptedWhisper(), [], HearsEverywhere("speech"), sync) as client:
+        with phone(client) as websocket:
+            client.post("/ask", params={"room": "kitchen"}, headers=AUTH)
+            stream(websocket, now_ms(), [0, 0])
+    sync.flush(10)
+
+    assert stored_events(db) == []
+
+
+def test_a_thud_alert_is_timed_from_its_detection_not_from_the_answer(classifier, monkeypatch):
+    monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.3)
+    db = FakeFirestore()
+    sync = CloudSync(db, "maria")
+    sent = []
+    start = now_ms()
+    with hub_hearing(classifier, ScriptedWhisper(), sent, ThudInWindows(1), sync) as client, phone(client) as websocket:
+        ask = thud_then_ask(websocket, start)
+        played(websocket, ask, start, ended_after_s=10.5)
+        eventually(lambda: sent)
+    sync.flush(10)
+
+    asked_ms = int(ask["ask_id"].rsplit("-", 1)[1])
+    [timings] = [data["timings"] for path, data, merge in db.writes if "/alerts/thud_" in path and not merge]
+    assert timings["aiDoneMs"] <= asked_ms
+
+
+def test_a_routine_answered_fine_is_not_asked_again_on_the_next_run(classifier, monkeypatch, capsys):
+    monkeypatch.setattr(server, "ROUTINE_EVERY_S", 0.05)
+    monkeypatch.setattr(server, "ANSWER_WAIT_S", 0.5)
+    checker = FakeChecker(routine_finding("routine_missing", "kitchen"))
+    start = now_ms()
+    with hub_hearing(classifier, ScriptedWhisper("Sto bene"), [], checker=checker) as client:
+        with phone(client) as websocket:
+            played(websocket, websocket.receive_json(), start, ended_after_s=0)
+            stream(websocket, start, [0.5, 0], first_seq=1)
+            wait_for_line(capsys, "routine_missing: fine, not reported")
+            time.sleep(0.3)  # several more 15-minute runs, at test speed
+
+    assert "asked:" not in capsys.readouterr().out
+
+
+def test_a_routine_alert_reaches_the_family_even_if_firestore_is_down(classifier, monkeypatch):
+    monkeypatch.setattr(server, "ROUTINE_EVERY_S", 0.05)
+    finding = routine_finding("long_silence", "")
+    sent = []
+    with hub_hearing(classifier, ScriptedWhisper(), sent, checker=FakeChecker(finding, store_fails=True)):
+        eventually(lambda: sent)
+        time.sleep(0.3)  # several more runs: it is not sent twice
+
+    assert sent == [finding.message]

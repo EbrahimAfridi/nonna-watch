@@ -184,7 +184,9 @@ only hard rule is that a milestone is not "done" until the test for it passes on
   `serve` prints each alert with its hops and sends it to Telegram; `telegram-test` checks the
   bot and finds the group's chat id. Since E7, thud and glass ask first (D26, D27).
 - E6. Firestore sync: one document per event when it ends, heartbeat every 5 min, alerts
-  immediately (D30).
+  immediately (D30). Done: `hub/nonna_hub/cloud_sync.py`, in the format of
+  docs/firestore-schema.md; alerts also get their voice check result, follow-up and timings; writes
+  wait while offline (D37). Checked against the real project under a test home.
   Offline queue: if internet drops, keep working and flush later.
 - E7. Voice check hub side: send `ask` to the phone, listen 30 s for "fine"-words or help words,
   alert on silence or help, follow-up message if she answers after an instant alert.
@@ -198,7 +200,8 @@ only hard rule is that a milestone is not "done" until the test for it passes on
   `homes/{id}` once E6 exists.
 - E9. If no billing (section 11): the routine / long-silence / offline checks as a 15-minute loop
   inside the hub, using B's logic. Offline done, in either billing path: a room that sends nothing
-  for 5 min alerts once, and again when it is back (D29). Left: routine and long silence (C5).
+  for 5 min alerts once, and again when it is back (D29). Routine and long silence done with B's
+  `nonna_cloud.checks.Checker`, switched on by `serve --routine-checks` (D37).
 - E10. Dockerfile for the hub so B can deploy the identical image to Cloud Run. Done:
   `hub/Dockerfile`, with YAMNet and Whisper inside so a cold start downloads nothing; settings
   through environment variables; deploy notes in `hub/README.md`.

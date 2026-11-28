@@ -1,6 +1,7 @@
 """Stand-ins for the slow or speech-only models, shared by the tests."""
 
 import numpy as np
+from google.api_core.exceptions import ServiceUnavailable
 
 from nonna_hub.categories import Detection
 
@@ -42,3 +43,64 @@ class ThudInWindows:
     def detect(self, scores):
         self.windows += 1
         return [Detection("thud", 0.9, "Thump, thud")] if self.windows in self.thud_windows else []
+
+
+class FakeFirestore:
+    """Stand-in for firestore.Client: records every set() as (path, data, merge).
+
+    The first `offline_writes` attempts fail as if the network were down.
+    """
+
+    def __init__(self, offline_writes=0):
+        self.writes = []
+        self.offline_writes = offline_writes
+
+    def collection(self, name):
+        return FakeReference(self, [name])
+
+
+class FakeReference:
+    def __init__(self, db, parts):
+        self.db = db
+        self.parts = parts
+
+    def collection(self, name):
+        return FakeReference(self.db, self.parts + [name])
+
+    def document(self, name):
+        return FakeReference(self.db, self.parts + [name])
+
+    def set(self, data, merge=False, timeout=None):
+        if self.db.offline_writes:
+            self.db.offline_writes -= 1
+            raise ServiceUnavailable("no network")
+        self.db.writes.append(("/".join(self.parts), data, merge))
+
+
+class FakeChecker:
+    """Stand-in for nonna_cloud's Checker: finds the same findings on every run, like the real one
+    until their alert is stored, and records what is reported."""
+
+    def __init__(self, *findings, store_fails=False):
+        self.findings = list(findings)
+        self.store_fails = store_fails
+        self.reported = []
+
+    def run(self):
+        return list(self.findings)
+
+    def report(self, finding, voice_result=None):
+        if self.store_fails:
+            raise ConnectionError("Firestore unreachable")
+        self.reported.append((finding.type, finding.room, voice_result))
+        self.findings.remove(finding)
+
+
+class HearsEverywhere:
+    """Stand-in for the categorizer: one category in every window."""
+
+    def __init__(self, category):
+        self.category = category
+
+    def detect(self, scores):
+        return [Detection(self.category, 0.9, self.category)]

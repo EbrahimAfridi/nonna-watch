@@ -95,8 +95,10 @@ writes a day against the free 20,000.
 | `end` | Timestamp | | `end >= start`. |
 | `source` | string | `"hub"` | `hub` / `cloud` / `phone` / `seed` (fake history, C4). |
 
-**Document id:** `{deviceId}_{startEpochMillis}`. One device can't start two events in the same millisecond,
-so a retry from the offline queue overwrites instead of duplicating.
+**Document id:** `{deviceId}_{startEpochMillis}_{category}` when the hub writes it (D38): one sound window
+can start several events at once, such as speech over a TV, and the category keeps them apart. A retry from the
+offline queue still overwrites the same document instead of duplicating. The fake history (C4) uses
+`{deviceId}_{startEpochMillis}`, one event at a time.
 
 **Queries the apps need:**
 - Today's timeline: `events.whereGreaterThanOrEqualTo("start", midnight).orderBy("start")`. No index needed.

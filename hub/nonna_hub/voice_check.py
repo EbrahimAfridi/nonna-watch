@@ -44,13 +44,18 @@ CONTRACTED_NOT = re.compile(r"n['’]t\b")
 
 
 def is_question(said: Utterance, sent_ms: int, ended_ms: int | None) -> bool:
-    """Whether this speech may be the question itself, which can contain "bene" or "aiuto".
+    """Whether this speech may be the question itself, which can contain "bene" or "aiuto"."""
+    return overlaps_question(said.start_ms, said.end_ms, sent_ms, ended_ms)
+
+
+def overlaps_question(start_ms: int, end_ms: int, sent_ms: int, ended_ms: int | None) -> bool:
+    """Whether a sound from start_ms to end_ms may be the phone playing the question.
 
     Until the phone reports when the question ended, anything that ends after it was sent counts.
     """
-    if said.end_ms <= sent_ms:
+    if end_ms <= sent_ms:
         return False
-    return ended_ms is None or said.start_ms < ended_ms + ECHO_MARGIN_MS
+    return ended_ms is None or start_ms < ended_ms + ECHO_MARGIN_MS
 
 
 def answer(said: Utterance) -> tuple[str, str] | None:
@@ -67,21 +72,24 @@ def answer(said: Utterance) -> tuple[str, str] | None:
     return None
 
 
+def new_future() -> asyncio.Future:
+    return asyncio.get_running_loop().create_future()
+
+
 @dataclass
 class VoiceCheck:
-    """One check in one room. The server awaits the two futures; the phone and the speech fill them."""
+    """One check in one room. The phone and the speech fill the futures; the server awaits them."""
 
     ask_id: str
-    alert: Alert | None  # what started it; None for a check the family asked for (POST /ask)
-    alert_sent: bool  # True when the alert went out at once and the check only adds a follow-up
+    reason: str  # an alert kind, a routine finding (routine_missing, long_silence) or "manual"
+    alert: Alert | None = None  # the hub alert behind it, if any
+    alert_sent: bool = False  # True when the alert went out at once and the check only adds a follow-up
+    detected: tuple[int, int] | None = None  # (hub received, AI done) for an alert that waits for the check
     sent_ms: int = field(default_factory=now_ms)
     ended_ms: int | None = None  # when the phone finished playing the question, in phone time
-    played: asyncio.Future = field(default_factory=lambda: asyncio.get_running_loop().create_future())
-    answered: asyncio.Future = field(default_factory=lambda: asyncio.get_running_loop().create_future())
-
-    @property
-    def reason(self) -> str:
-        return self.alert.kind if self.alert else "manual"
+    played: asyncio.Future = field(default_factory=new_future)
+    answered: asyncio.Future = field(default_factory=new_future)
+    done: asyncio.Future = field(default_factory=new_future)  # (outcome, detail) once the check is over
 
     def hear(self, said: Utterance) -> None:
         """Settle the check with the first speech after the question that says fine or help."""
