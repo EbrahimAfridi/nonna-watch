@@ -51,7 +51,7 @@ from nonna_hub.voice_check import (
     QUESTIONS,
     VoiceCheck,
     is_question,
-    overlaps_question,
+    starts_during_question,
 )
 
 HELLO_TIMEOUT_S = 10
@@ -363,6 +363,8 @@ class Hub:
             return
         place = finding.room or "home"
         voice_result = await self._ask_about(finding) if finding.voice_check else None
+        if voice_result == "busy":
+            return  # asked on the next run instead of reported without asking
         self._findings_done.add(finding.alert_id)
         if voice_result == "fine":
             print(f"{place:<12} {clock(now_ms())}   CHECK        {finding.type}: fine, not reported")
@@ -377,12 +379,17 @@ class Hub:
             print(f"{place:<12} {clock(at_ms)}   NOT STORED   {finding.alert_id}: {error}")
 
     async def _ask_about(self, finding: Finding) -> str | None:
-        """Ask in the finding's room, or in every room when the whole home is silent. Help anywhere wins."""
+        """Ask in the finding's room, or in every room when the whole home is silent. Help anywhere wins.
+
+        None means no phone to ask through; "busy" means every phone is already in another check.
+        """
         rooms = [finding.room] if finding.room else list(self.listeners)
-        askers = [self.listeners[room] for room in rooms if room in self.listeners]
-        askers = [listener for listener in askers if listener.voice_check is None]
+        phones = [self.listeners[room] for room in rooms if room in self.listeners]
+        if not phones:
+            return None
+        askers = [listener for listener in phones if listener.voice_check is None]
         if not askers:
-            return None  # no phone to ask through: report it as it is
+            return "busy"
         outcomes = await asyncio.gather(*(self._ask_and_wait(listener, finding.type) for listener in askers))
         for outcome in ("help", "fine"):
             if outcome in outcomes:
@@ -403,7 +410,7 @@ class Hub:
         if not self._sync:
             return
         hub = {"kind": "hub", "room": "", "lastHeartbeat": timestamp(self._heartbeat_ms), "online": True, "target": "hub"}
-        self._sync.device("hub", hub)
+        self._sync.device(self.hub_id, hub)
         for room in self.last_heard_ms:
             self._write_phone(room)
 
@@ -464,7 +471,7 @@ class Hub:
     def _event_ended(self, listener: Listener, event: Event) -> None:
         print_event(listener.room, event)
         check = listener.voice_check
-        if check and overlaps_question(event.start_ms, event.end_ms, check.sent_ms, check.ended_ms):
+        if check and starts_during_question(event.start_ms, check.sent_ms, check.ended_ms):
             return  # the phone playing "Are you okay?" is not activity in the home
         if self._sync:
             self._sync.event(listener.room, event)

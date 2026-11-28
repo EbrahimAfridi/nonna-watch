@@ -69,3 +69,16 @@ def test_writes_made_while_offline_go_through_later_in_order(monkeypatch):
     sync.flush(10)
 
     assert [path for path, _, _ in db.writes] == ["homes/maria/devices/hub", "homes/maria/devices/listener-kitchen"]
+
+
+def test_a_retried_alert_keeps_what_the_family_app_changed():
+    db = FakeFirestore()
+    sync = CloudSync(db, "maria")
+    alert = Alert("help_word", START_MS, "aiuto")
+
+    sync.alert("kitchen", alert, None, None)
+    sync.update_alert("kitchen", alert, {"status": "seen"})  # as the family app would
+    sync.alert("kitchen", alert, None, None)  # the same write again, as after a timeout
+    sync.flush(10)
+
+    assert [data.get("status") for _, data, _ in db.writes] == ["sent", "seen"]

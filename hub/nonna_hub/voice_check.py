@@ -17,6 +17,8 @@ ASK_PLAYED_TIMEOUT_S = 20  # contract: no ask_played within 20 s means the check
 ANSWER_WINDOW_MS = 30_000  # contract: answers count for 30 s after the question ends
 ANSWER_WAIT_S = 35  # those 30 s plus time for a late answer to get through Whisper
 ECHO_MARGIN_MS = 300  # speech starting this soon after the question may still be the question
+MAX_QUESTION_MS = 15_000  # the contract caps the recorded question at about 15 s
+WINDOW_LEAD_MS = 1_000  # a YAMNet window starts up to a second before the sound in it
 
 # Until E8 reads the home's settings: what the phone says when the family recorded no clip.
 QUESTIONS = {
@@ -56,6 +58,16 @@ def overlaps_question(start_ms: int, end_ms: int, sent_ms: int, ended_ms: int | 
     if end_ms <= sent_ms:
         return False
     return ended_ms is None or start_ms < ended_ms + ECHO_MARGIN_MS
+
+
+def starts_during_question(start_ms: int, sent_ms: int, ended_ms: int | None) -> bool:
+    """Whether a sound event began while the phone was playing the question.
+
+    For the timeline only: a TV or a tap that was already running, or the thud that started the
+    check, began earlier and still counts as activity.
+    """
+    question_end_ms = ended_ms if ended_ms is not None else sent_ms + MAX_QUESTION_MS
+    return sent_ms - WINDOW_LEAD_MS <= start_ms < question_end_ms + ECHO_MARGIN_MS
 
 
 def answer(said: Utterance) -> tuple[str, str] | None:

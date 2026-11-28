@@ -99,13 +99,13 @@ class CloudSync:
             document["detail"] = {"word": alert.detail}
         if timings:
             document["timings"] = timings
-        self._write("alerts", alert_id(room, alert), document)
+        self._write("alerts", alert_id(room, alert), document, mode="create")
 
     def update_alert(self, room: str, alert: Alert, fields: dict) -> None:
-        self._write("alerts", alert_id(room, alert), fields, merge=True)
+        self._write("alerts", alert_id(room, alert), fields, mode="merge")
 
     def device(self, device_id: str, fields: dict) -> None:
-        self._write("devices", device_id, fields, merge=True)
+        self._write("devices", device_id, fields, mode="merge")
 
     def flush(self, timeout_s: float) -> None:
         """Wait for the queued writes, at most timeout_s: when the hub stops, and in tests."""
@@ -113,16 +113,23 @@ class CloudSync:
         while self._writes.unfinished_tasks and time.monotonic() < deadline:
             time.sleep(0.05)
 
-    def _write(self, collection: str, document_id: str, data: dict, merge: bool = False) -> None:
-        self._writes.put((collection, document_id, data, merge))
+    def _write(self, collection: str, document_id: str, data: dict, mode: str = "set") -> None:
+        """mode: "set" replaces the document, "merge" changes only the given fields, "create" writes it once."""
+        self._writes.put((collection, document_id, data, mode))
 
     def _write_forever(self) -> None:
         while True:
-            collection, document_id, data, merge = self._writes.get()
+            collection, document_id, data, mode = self._writes.get()
+            document = self._home.collection(collection).document(document_id)
             for delay_s in itertools.chain(RETRY_DELAYS_S, itertools.repeat(RETRY_DELAYS_S[-1])):
                 try:
-                    self._home.collection(collection).document(document_id).set(data, merge=merge, timeout=10)
+                    if mode == "create":
+                        document.create(data, timeout=10)
+                    else:
+                        document.set(data, merge=mode == "merge", timeout=10)
                     break
+                except google_errors.AlreadyExists:
+                    break  # an earlier try got through after all; keep what the family app changed since
                 except TEMPORARY as error:
                     print(f"Firestore unreachable ({type(error).__name__}); retrying in {delay_s} s")
                     time.sleep(delay_s)

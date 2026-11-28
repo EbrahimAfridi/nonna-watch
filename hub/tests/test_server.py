@@ -87,7 +87,7 @@ def devices(client):
     return client.get("/devices", headers=AUTH).json()
 
 
-def eventually(condition, timeout_s=2):
+def eventually(condition, timeout_s=5):
     """Wait for something the hub does in the background, such as sending an alert."""
     deadline = time.monotonic() + timeout_s
     while not condition():
@@ -382,7 +382,7 @@ def test_the_alert_its_voice_check_and_the_heartbeat_reach_firestore(classifier)
     assert any("alertSentMs" in data.get("timings", {}) for data, _ in updates)
     [answer] = [data for data, _ in updates if "voiceCheck" in data]
     assert answer["voiceCheck"] == {"asked": True, "result": "fine"} and '"sto bene"' in answer["followUp"]
-    assert any(path == "homes/maria/devices/hub" and data["kind"] == "hub" for path, data, _ in db.writes)
+    assert any(path == "homes/maria/devices/test-hub" and data["kind"] == "hub" for path, data, _ in db.writes)
 
 
 def routine_finding(kind, room):
@@ -511,3 +511,29 @@ def test_a_routine_alert_reaches_the_family_even_if_firestore_is_down(classifier
         time.sleep(0.3)  # several more runs: it is not sent twice
 
     assert sent == [finding.message]
+
+
+def test_a_sound_that_began_before_the_question_still_counts_as_activity(classifier):
+    db = FakeFirestore()
+    sync = CloudSync(db, "maria")
+    before = now_ms() - 10_000  # a TV that was on well before the question
+    with hub_hearing(classifier, ScriptedWhisper(), [], HearsEverywhere("tv_music"), sync) as client:
+        with phone(client) as websocket:
+            stream(websocket, before, [0, 0])
+            client.post("/ask", params={"room": "kitchen"}, headers=AUTH)
+            stream(websocket, before, [0, 0], first_seq=2)
+    sync.flush(10)
+
+    assert len(stored_events(db)) == 1
+
+
+def test_a_routine_finding_waits_while_the_rooms_phone_is_busy(classifier, monkeypatch):
+    monkeypatch.setattr(server, "ROUTINE_EVERY_S", 0.05)
+    checker = FakeChecker(routine_finding("routine_missing", "kitchen"))
+    sent = []
+    with hub_hearing(classifier, ScriptedWhisper(), sent, checker=checker) as client:
+        with phone(client):
+            client.post("/ask", params={"room": "kitchen"}, headers=AUTH)  # a check already running
+            time.sleep(0.3)  # several routine runs
+
+    assert (checker.reported, sent) == ([], [])

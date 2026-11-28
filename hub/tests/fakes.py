@@ -1,7 +1,7 @@
 """Stand-ins for the slow or speech-only models, shared by the tests."""
 
 import numpy as np
-from google.api_core.exceptions import ServiceUnavailable
+from google.api_core.exceptions import AlreadyExists, ServiceUnavailable
 
 from nonna_hub.categories import Detection
 
@@ -75,6 +75,11 @@ class FakeReference:
             self.db.offline_writes -= 1
             raise ServiceUnavailable("no network")
         self.db.writes.append(("/".join(self.parts), data, merge))
+
+    def create(self, data, timeout=None):
+        if any(path == "/".join(self.parts) for path, _, _ in self.db.writes):
+            raise AlreadyExists("document exists")
+        self.set(data)
 
 
 class FakeChecker:

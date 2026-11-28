@@ -1,4 +1,4 @@
-# Only what the Dockerfile copies, so nothing else in the repository (keys, recordings) is ever sent.
+# Only what hub/Dockerfile copies, so nothing else in the repository (keys, recordings) is ever sent.
 *
 !hub/pyproject.toml
 !hub/uv.lock
