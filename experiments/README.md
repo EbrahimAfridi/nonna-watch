@@ -77,13 +77,15 @@ Two things to know:
 # terminal 1
 uv run python -m nonna_exp.record_hub
 # terminal 2: automatic, 30 times, one recording through the fake phone
-uv run python -m nonna_exp.trials --setup edge --clip data/help_it_anna_01.wav --room kitchen
+uv run python -m nonna_exp.trials --setup edge --clip data/help_it_anna_01.wav --room kitchen --kind help_word
 # or by hand with a real phone
 uv run python -m nonna_exp.trials --setup edge --label "real phone, shout aiuto"
 ```
 For **cloud**, point the fake phone at Cloud Run: `--setup cloud --hub-url wss://<url>/ws/listener` (after C8).
 For **phone-only**, the phone itself raises the alert (A10) and writes `timings` into the alert in Firestore,
 so those rows come from Firestore, not `hub.log`. That reader is added once A10 exists.
+Each trial only counts an alert from its own room (and `--kind`, if given) for a sound made after the trial
+started, so a late alert from the trial before, or a phone going offline, is never timed by mistake.
 Trials are 65 s apart, because the hub sends at most one alert of each kind per room per minute.
 
 ### 2 and 7. Data leaving the house

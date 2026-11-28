@@ -67,7 +67,9 @@ One document per person being looked after. `homeId` is short and readable, for 
 ## `homes/{homeId}/devices/{deviceId}`
 
 One document per listener phone, plus one for the hub itself (so the cloud can notice the hub going silent).
-`deviceId` is chosen by the device: for example `listener-kitchen-cmf` or `hub`.
+`deviceId` is `listener-{room}` for a listener (one per room, D37), and the hub's `HUB_ID` for a hub
+(`hub` by default, D39), so a laptop hub and a Cloud Run hub each have their own. The cloud watches every
+document with `kind == "hub"`.
 
 | Field | Type | Example | Notes |
 |---|---|---|---|
@@ -170,6 +172,9 @@ One document per signed-in family member, written by the family app itself.
 4. Members can **only move alerts forward**: change `status`, `answeredBy`, `seenAt`, `resolvedAt`. They
    cannot edit the message or invent an alert, except phone-only mode, which may create events and
    the alerts YAMNet alone can detect (`scream`, `distress`, `thud`, `glass`, `smoke_alarm`) with `source == "phone"`.
-5. Routines are read-only for everyone except the service account.
-6. `users/{uid}` is readable and writable only by that same user.
-7. Everything else is denied.
+5. What an app writes must use one of the five room ids (`kitchen`, `bathroom`, `bedroom`, `living_room`,
+   `hallway`, D22); a phone-only listener writes only its own `devices/listener-{room}`, so an app can never
+   create or overwrite a hub's document.
+6. Routines are read-only for everyone except the service account.
+7. `users/{uid}` is readable and writable only by that same user.
+8. Everything else is denied.

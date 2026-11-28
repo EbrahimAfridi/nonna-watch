@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 
-from nonna_exp import EXPERIMENTS, HUB
+from nonna_exp import EXPERIMENTS, HUB, hub_env_file
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> None:
     log_path = EXPERIMENTS / "hub.log"
     print(f"Saving the hub's output to {log_path}  (Ctrl+C stops the hub)")
     with log_path.open("a", encoding="utf-8") as log, subprocess.Popen(
-        [uv, "run", "nonna-hub", *args], cwd=HUB, env=env,
+        [uv, "run", *hub_env_file(), "nonna-hub", *args], cwd=HUB, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
     ) as hub:
         try:

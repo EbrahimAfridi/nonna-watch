@@ -27,3 +27,8 @@ HUB = REPO / "hub"
 RESULTS = EXPERIMENTS / "results"
 CHARTS = EXPERIMENTS / "charts"
 DATA = EXPERIMENTS / "data"
+
+
+def hub_env_file() -> list[str]:
+    """`uv run` arguments that load hub/.env (HUB_TOKEN, Telegram, Firestore), as hub/README.md runs the hub."""
+    return ["--env-file", ".env"] if (HUB / ".env").exists() else []
