@@ -25,13 +25,16 @@ import androidx.core.content.ContextCompat
 import app.nonnawatch.core.Room
 import app.nonnawatch.listener.audio.AudioChunk
 import app.nonnawatch.listener.audio.MicRecorder
-import app.nonnawatch.listener.audio.peakPercent
+import app.nonnawatch.listener.audio.level
 import app.nonnawatch.listener.hub.BatteryReading
 import app.nonnawatch.listener.hub.HubConfig
 import app.nonnawatch.listener.hub.HubLink
 import app.nonnawatch.listener.hub.OkHttpHubSockets
 import app.nonnawatch.listener.hub.deviceModel
 import app.nonnawatch.listener.hub.hubHttpClient
+import app.nonnawatch.listener.light.LightStatus
+import app.nonnawatch.listener.light.followLight
+import app.nonnawatch.listener.light.lightReadings
 import app.nonnawatch.listener.settings.ListenerSettings
 import app.nonnawatch.listener.settings.PrefsSettingsStore
 import app.nonnawatch.listener.voice.androidCheckInQuestion
@@ -41,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -58,6 +62,10 @@ import kotlinx.coroutines.launch
  * WifiLock (Wi-Fi does not go to sleep), as docs/api-contract.md asks.
  *
  * Each second of audio goes to the hub through [HubLink] and is then dropped; nothing is saved.
+ * Only how loud each second was stays, for the last minute, for the level drawing.
+ *
+ * While the microphone is on, the light sensor runs too, and each change from dark to bright or
+ * back goes to the hub as a `light` message. Pause turns both off.
  *
  * When the hub asks, the check-in question plays from here too. Android 17 lets a background app
  * play sound only from a foreground service the person started while the app was on screen, which
@@ -130,12 +138,13 @@ class ListenerService : Service() {
             voiceCheck = voiceCheck,
             log = { Log.i(TAG, it) },
         )
-        val mic = MutableStateFlow<MicState>(MicState.Recording(secondsRecorded = 0, levelPercent = 0))
+        val mic = MutableStateFlow<MicState>(MicState.Recording(secondsRecorded = 0))
+        val light = MutableStateFlow<LightStatus?>(null)
 
         running = scope.launch {
             launch {
-                combine(mic, link.state, voiceCheck.state) { micState, hubState, question ->
-                    ServiceState.Running(settings.room, micState, hubState, question)
+                combine(mic, link.state, voiceCheck.state, light) { micState, hubState, question, lightStatus ->
+                    ServiceState.Running(settings.room, micState, hubState, question, lightStatus)
                 }.collect { ServiceStateHolder.set(it) }
             }
             launch {
@@ -144,23 +153,38 @@ class ListenerService : Service() {
             }
 
             var seconds = 0L
-            // collectLatest cancels the recording when the switch flips to paused, which releases
-            // the microphone: Android's microphone indicator turns off.
+            // collectLatest cancels the recording and the light sensor when the switch flips to
+            // paused, which releases the microphone: Android's microphone indicator turns off.
             paused.collectLatest { isPaused ->
                 showNotification(settings.room, isPaused)
                 if (isPaused) {
                     mic.value = MicState.Paused
+                    light.value = null
                     return@collectLatest
                 }
-                mic.value = MicState.Recording(seconds, levelPercent = 0)
-                record(
-                    onChunk = { chunk ->
-                        seconds += 1
-                        link.send(chunk) // the chunk is dropped after this
-                        mic.value = MicState.Recording(seconds, chunk.peakPercent())
-                    },
-                    onProblem = { message -> mic.value = MicState.Problem(message) },
-                )
+                // The drawing starts empty after a pause: it has no gap to show the pause, so the
+                // bars from before would look like the last few seconds.
+                var recording = MicState.Recording(seconds)
+                mic.value = recording
+                coroutineScope {
+                    launch {
+                        followLight(
+                            readings = lightReadings(this@ListenerService),
+                            clock = System::currentTimeMillis,
+                            status = { light.value = it },
+                            onChange = link::sendLight,
+                        )
+                    }
+                    record(
+                        onChunk = { chunk ->
+                            link.send(chunk) // the chunk is dropped after this
+                            recording = recording.plusSecond(chunk.level())
+                            seconds = recording.secondsRecorded
+                            mic.value = recording
+                        },
+                        onProblem = { message -> mic.value = MicState.Problem(message) },
+                    )
+                }
             }
         }
     }

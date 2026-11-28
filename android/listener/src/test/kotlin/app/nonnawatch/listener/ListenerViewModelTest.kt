@@ -1,7 +1,9 @@
 package app.nonnawatch.listener
 
 import app.nonnawatch.core.Room
+import app.nonnawatch.core.protocol.LightState
 import app.nonnawatch.listener.hub.LinkState
+import app.nonnawatch.listener.light.LightStatus
 import app.nonnawatch.listener.settings.ListenerSettings
 import app.nonnawatch.listener.settings.SettingsStore
 import app.nonnawatch.listener.voice.AskResult
@@ -19,6 +21,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -72,11 +75,12 @@ class ListenerViewModelTest {
     private fun viewModel() = ListenerViewModel(control, settings, zone = ZoneOffset.UTC)
 
     private fun running(
-        mic: MicState = MicState.Recording(secondsRecorded = 42, levelPercent = 7),
+        mic: MicState = MicState.Recording(secondsRecorded = 42, levels = listOf(0.25f, 0.75f)),
         hub: LinkState = LinkState.Connected("ebrahim-mac", secondsSent = 40),
         room: Room = Room.HALLWAY,
         question: QuestionState? = null,
-    ) = ServiceState.Running(room, mic, hub, question)
+        light: LightStatus? = null,
+    ) = ServiceState.Running(room, mic, hub, question, light)
 
     // viewModelScope runs on Android's main thread; in a PC test a test dispatcher stands in.
     @Before
@@ -159,8 +163,45 @@ class ListenerViewModelTest {
         val state = viewModel.state.value
         assertTrue(state.listening)
         assertEquals(Room.HALLWAY, state.room)
-        assertEquals("Listening · 42 s recorded · level 7 %", state.status)
+        assertEquals("Listening · 42 s recorded", state.status)
+        assertEquals(listOf(0.25f, 0.75f), state.micLevels) // drawn under the status line
         assertEquals("Hub: connected to ebrahim-mac · 40 s sent", state.hubStatus)
+    }
+
+    @Test
+    fun theLevelDrawingShowsOnlyWhileTheMicrophoneRecords() {
+        val viewModel = viewModel()
+        assertNull(viewModel.state.value.micLevels) // not listening
+
+        control.state.value = running(mic = MicState.Recording(secondsRecorded = 0))
+        assertEquals(emptyList<Float>(), viewModel.state.value.micLevels) // an empty box until the first second
+
+        control.state.value = running(mic = MicState.Paused)
+        assertNull(viewModel.state.value.micLevels)
+
+        control.state.value = running(mic = MicState.Problem("the microphone stopped working"))
+        assertNull(viewModel.state.value.micLevels)
+    }
+
+    @Test
+    fun itShowsTheLightSensor() {
+        val viewModel = viewModel()
+        assertEquals("", viewModel.state.value.lightStatus) // not listening
+
+        control.state.value = running(light = LightStatus.Waiting)
+        assertEquals("Light: waiting for the sensor…", viewModel.state.value.lightStatus)
+
+        control.state.value = running(light = LightStatus.Reading(LightState.BRIGHT, lux = 112))
+        assertEquals("Light: bright · 112 lux", viewModel.state.value.lightStatus)
+
+        control.state.value = running(light = LightStatus.Reading(LightState.DARK, lux = 3))
+        assertEquals("Light: dark · 3 lux", viewModel.state.value.lightStatus)
+
+        control.state.value = running(light = LightStatus.NoSensor)
+        assertEquals("Light: this phone has no light sensor", viewModel.state.value.lightStatus)
+
+        control.state.value = running(mic = MicState.Paused, light = null) // pause turns the sensor off
+        assertEquals("", viewModel.state.value.lightStatus)
     }
 
     @Test
@@ -210,7 +251,7 @@ class ListenerViewModelTest {
         viewModel.togglePause()
         control.state.value = running(mic = MicState.Paused)
         assertTrue(viewModel.state.value.paused)
-        assertEquals("Paused: the microphone is off", viewModel.state.value.status)
+        assertEquals("Paused: the microphone and the light sensor are off", viewModel.state.value.status)
         viewModel.togglePause()
 
         assertEquals(listOf(true, false), control.pauseCalls)

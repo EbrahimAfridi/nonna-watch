@@ -1,6 +1,7 @@
 package app.nonnawatch.listener.audio
 
 import kotlin.math.abs
+import kotlin.math.log10
 
 /** 16 kHz mono 16-bit, the only format the hub accepts (docs/api-contract.md). */
 const val SAMPLE_RATE = 16_000
@@ -20,17 +21,26 @@ const val CHUNK_MS = 1_000L
 class AudioChunk(val captureMs: Long, val samples: ShortArray)
 
 /**
- * The loudest sample as a share of full scale, 0 to 100. The status line shows it so you can see
- * the microphone really hears something; A4 replaces the number with a drawn level.
+ * How loud the loudest moment of this second was, from 0 (60 dB or more below full scale, or
+ * silence) to 1 (full scale), for the level drawing on the screen.
+ *
+ * Decibels, not a plain share of full scale: in a quiet room the loudest sample is about 1 % of
+ * full scale, which would draw as nothing. On this scale a quiet room is about a third and speech
+ * near the phone about three quarters, so both show.
  */
-fun AudioChunk.peakPercent(): Int {
+fun AudioChunk.level(): Float {
     var peak = 0
     for (sample in samples) {
         val size = abs(sample.toInt())
         if (size > peak) peak = size
     }
-    return peak * 100 / FULL_SCALE
+    if (peak == 0) return 0f
+    val decibels = 20 * log10(peak.toDouble() / FULL_SCALE)
+    return ((decibels + LEVEL_RANGE_DB) / LEVEL_RANGE_DB).toFloat().coerceIn(0f, 1f)
 }
 
 /** abs(Short.MIN_VALUE): the largest a 16-bit sample can be. */
 private const val FULL_SCALE = 32_768
+
+/** The drawing shows the top 60 dB; anything quieter is drawn as silence. */
+private const val LEVEL_RANGE_DB = 60.0

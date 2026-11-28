@@ -1,11 +1,13 @@
 package app.nonnawatch.listener.hub
 
 import app.nonnawatch.core.Room
+import app.nonnawatch.core.protocol.LightState
 import app.nonnawatch.core.protocol.askNotPlayedMessage
 import app.nonnawatch.core.protocol.askPlayedMessage
 import app.nonnawatch.core.protocol.heartbeatMessage
 import app.nonnawatch.core.protocol.helloMessage
 import app.nonnawatch.listener.audio.AudioChunk
+import app.nonnawatch.listener.light.LightChange
 import app.nonnawatch.listener.voice.AskResult
 import app.nonnawatch.listener.voice.NotPlayedReason
 import app.nonnawatch.listener.voice.VoiceCheck
@@ -515,6 +517,30 @@ class HubLinkTest {
         socket.hubSays("""{"type": "checkin_clip", "clip_id": null}""")
         runCurrent()
         assertEquals(1, voiceCheck.deletes)
+    }
+
+    @Test
+    fun aLightChangeGoesToTheHubWithTheTimeItHappened() = runTest {
+        connect()
+
+        link.sendLight(LightChange(tsMs = 1_795_698_200_000L, state = LightState.DARK, lux = 3.5f))
+
+        assertEquals(
+            """{"type":"light","ts_ms":1795698200000,"state":"dark","lux":3.5}""",
+            sockets.last.texts.last(),
+        )
+    }
+
+    @Test
+    fun aLightChangeWhileNotConnectedIsDropped() = runTest {
+        startLink()
+        runCurrent()
+        link.sendLight(LightChange(tsMs = NOW, state = LightState.BRIGHT, lux = 112f)) // before the welcome
+
+        sockets.last.welcome()
+        runCurrent()
+
+        assertTrue(sockets.last.texts.none { it.contains("\"light\"") })
     }
 
     @Test

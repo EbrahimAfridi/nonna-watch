@@ -70,6 +70,22 @@ class ProtocolTest {
     }
 
     @Test
+    fun lightMatchesTheContract() {
+        assertEquals(
+            """{"type":"light","ts_ms":1795698222000,"state":"bright","lux":112.0}""",
+            lightMessage(tsMs = 1_795_698_222_000L, state = LightState.BRIGHT, lux = 112f),
+        )
+    }
+
+    @Test
+    fun lightNeverSendsALuxTheHubWouldRefuse() {
+        // The hub refuses lux below zero, and "not a number" is not valid JSON.
+        val dark = """{"type":"light","ts_ms":0,"state":"dark","lux":0.0}"""
+        assertEquals(dark, lightMessage(tsMs = 0, state = LightState.DARK, lux = -1f))
+        assertEquals(dark, lightMessage(tsMs = 0, state = LightState.DARK, lux = Float.NaN))
+    }
+
+    @Test
     fun welcomeIsRead() {
         assertEquals(
             HubMessage.Welcome(hubId = "ebrahim-mac", hubTimeMs = 1_795_698_192_150L, paused = false),

@@ -8,8 +8,10 @@ import app.nonnawatch.core.protocol.askPlayedMessage
 import app.nonnawatch.core.protocol.audioFrame
 import app.nonnawatch.core.protocol.heartbeatMessage
 import app.nonnawatch.core.protocol.helloMessage
+import app.nonnawatch.core.protocol.lightMessage
 import app.nonnawatch.core.protocol.parseHubMessage
 import app.nonnawatch.listener.audio.AudioChunk
+import app.nonnawatch.listener.light.LightChange
 import app.nonnawatch.listener.voice.AskResult
 import app.nonnawatch.listener.voice.NotPlayedReason
 import app.nonnawatch.listener.voice.VoiceCheck
@@ -63,7 +65,8 @@ data class BatteryReading(val percent: Int, val charging: Boolean)
  * [voiceCheck] plays the check-in question when the hub sends `ask`, and keeps the family's
  * recording from `checkin_clip`. Audio and heartbeats keep going while the question plays.
  *
- * Call [send] from the thread that runs [run] (the service uses the main thread for both).
+ * Call [send] and [sendLight] from the thread that runs [run] (the service uses the main thread
+ * for all three).
  */
 class HubLink(
     private val config: HubConfig,
@@ -108,6 +111,19 @@ class HubLink(
      */
     fun send(chunk: AudioChunk) {
         session?.sendAudio(chunk)
+    }
+
+    /**
+     * Tells the hub the room went dark or bright, if the hub has welcomed this phone. Until A5
+     * keeps them for later, a change while disconnected is dropped.
+     */
+    fun sendLight(change: LightChange) {
+        val current = session
+        if (current == null) {
+            log("Light ${change.state.wire}, not sent: not connected to the hub")
+            return
+        }
+        current.sendLight(change)
     }
 
     private suspend fun connectOnce(): SessionEnd {
@@ -252,6 +268,11 @@ class HubLink(
         fun sendHeartbeat() {
             val reading = battery()
             socket.sendText(heartbeatMessage(clock(), reading.percent, reading.charging, paused.value))
+        }
+
+        fun sendLight(change: LightChange) {
+            log("Light ${change.state.wire} (${change.lux} lux)")
+            socket.sendText(lightMessage(change.tsMs, change.state, change.lux))
         }
     }
 

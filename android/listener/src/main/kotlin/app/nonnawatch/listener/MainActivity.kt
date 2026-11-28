@@ -84,7 +84,12 @@ fun ListenerScreen(viewModel: ListenerViewModel) {
     ) {
         Text("Nonna Watch listener", style = MaterialTheme.typography.headlineSmall)
         Text("Status: ${state.status}")
+        state.micLevels?.let { levels ->
+            MicLevelChart(levels)
+            Text("Sound in the last minute: taller is louder", style = MaterialTheme.typography.bodySmall)
+        }
         if (state.hubStatus.isNotEmpty()) Text(state.hubStatus)
+        if (state.lightStatus.isNotEmpty()) Text(state.lightStatus)
         if (state.questionStatus.isNotEmpty()) Text(state.questionStatus)
 
         if (state.listening) {
