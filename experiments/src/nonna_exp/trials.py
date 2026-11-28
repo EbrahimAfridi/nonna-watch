@@ -35,7 +35,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from nonna_exp import EXPERIMENTS, HUB, RESULTS
+from nonna_exp import EXPERIMENTS, HUB, RESULTS, hub_env_file
 from nonna_exp.hublog import AlertTiming, HubLogReader
 
 NOT_TIMED = {"offline", "back_online", "water_running"}   # hub notices, not reactions to the trial's sound
@@ -57,7 +57,7 @@ def append_row(path: Path, row: dict) -> None:
 
 def start_fake_phone(clip: Path, room: str, hub_url: str) -> subprocess.Popen:
     uv = shutil.which("uv") or os.environ.get("UV", "uv")
-    cmd = [uv, "run", "nonna-hub", "fake-phone", "--room", room, "--hub", hub_url, str(clip.resolve())]
+    cmd = [uv, "run", *hub_env_file(), "nonna-hub", "fake-phone", "--room", room, "--hub", hub_url, str(clip.resolve())]
     return subprocess.Popen(cmd, cwd=HUB, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
 
 
