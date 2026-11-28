@@ -172,6 +172,22 @@ You can rehearse it as often as you like: `--clear` also deletes **today's** rou
 still fires after a rehearsal. If the hub runs the checks (`serve --routine-checks`), restart it too, because it
 remembers in memory what it already reported today.
 
+## Telegram commands: /status, /ask, /help (extra)
+
+The family can check on Maria from the group. Run this as a **third window** next to the hub, on the same laptop:
+```powershell
+cd cloud
+uv run python -m nonna_cloud.bot
+```
+It reads `hub/.env` (bot token, chat id, HUB_TOKEN) and sets the `/` menu in Telegram itself.
+- `/status`: is the hub on, which phones listen (and their battery), the last sound from Firestore.
+- `/ask`: buttons with the rooms; tapping one makes that phone ask "Stai bene?" through the hub's `POST /ask`.
+  `/ask kitchen` skips the buttons.
+- Only the family group is answered, because `/ask` makes a phone speak in Maria's home.
+- Only one program may read the bot's messages: stop the bot before running `telegram_setup chat-id`.
+- For now Maria's answer to an `/ask` only shows in the hub's window; the hub sending it to the group is a
+  small change on the hub's side.
+
 ## For teammates
 
 - **Ebrahim (hub, E9):** run the checks every 15 minutes with `from nonna_cloud.checks import Checker`

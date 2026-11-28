@@ -39,10 +39,10 @@ def token() -> str:
     return t
 
 
-def call(method: str, **params) -> dict:
+def call(method: str, _timeout: float = 15, **params) -> dict:
     url = f"https://api.telegram.org/bot{token()}/{method}"
     data = urllib.parse.urlencode(params).encode() if params else None
-    with urllib.request.urlopen(url, data=data, timeout=15) as r:
+    with urllib.request.urlopen(url, data=data, timeout=_timeout) as r:
         body = json.load(r)
     if not body.get("ok"):
         raise TelegramError(f"Telegram said: {body}")
