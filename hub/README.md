@@ -107,6 +107,28 @@ Two notices need no sound: a room whose phone sends nothing, not even a heartbea
 is reported offline (and again when it is back), and a tap running for 20 minutes gets a gentle
 note.
 
+## Firestore (E6)
+
+With two more lines in `hub/.env`, `serve` stores what the family app shows, in the format of
+`docs/firestore-schema.md`: one document per event when it ends, each alert at once (updated when its
+voice check ends and when Telegram confirms), and heartbeats for the hub and each phone every 5
+minutes. Writes wait while the internet is down and go out when it is back. `listen` never writes.
+
+```
+HOME_ID=maria
+GOOGLE_APPLICATION_CREDENTIALS=/Users/<you>/.config/nonna-watch/firebase-service-account.json
+```
+
+Keep the service-account key outside the repository; B shares it privately.
+
+### Routine and silence checks (E9, billing Path B)
+
+`serve --routine-checks` also runs B's checks from `cloud/` every 15 minutes: a room whose usual
+sounds have not happened yet today, or a whole home silent for 45 minutes at an hour she is usually
+active. The hub asks "Are you okay?" first (in that room, or in every room for a silent home) and
+reports only without a reassuring answer. It is off by default because the demo home `maria` has
+only fake history, so it would report missing routines every day.
+
 ## Voice check
 
 The phone asks "Are you okay?" (in the home's first language, so `Stai bene?` for `--languages
@@ -133,11 +155,11 @@ uv run pytest
 ## Container for Cloud Run (E10)
 
 `hub/Dockerfile` builds the same hub with YAMNet and Whisper inside, so a cold start downloads
-nothing. Cloud Run runs amd64, so on a Mac with Apple Silicon add `--platform linux/amd64`:
+nothing. Build it from the repository root, because the hub uses the `cloud/` package for the
+routine checks. Cloud Run runs amd64, so on a Mac with Apple Silicon keep `--platform linux/amd64`:
 
 ```
-cd hub
-docker build --platform linux/amd64 -t nonna-hub .
+docker build --platform linux/amd64 -f hub/Dockerfile -t nonna-hub .
 docker run --rm -p 8080:8080 -e HUB_TOKEN=<token> nonna-hub
 ```
 
@@ -154,3 +176,5 @@ Cloud Run settings that matter for the hub (C8):
 - `--min-instances 0 --max-instances 3` (budget guardrails, section 11 of CONTEXT.md). The first
   phone after a quiet spell waits for a cold start; Experiment 1 times warm instances.
 - Phones connect to `wss://<service-url>/ws/listener`.
+- Firestore: set `HOME_ID`, and mount the service-account key from Secret Manager as a file with
+  `GOOGLE_APPLICATION_CREDENTIALS` pointing at it. Without both, the hub runs but stores nothing.

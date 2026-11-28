@@ -45,8 +45,8 @@ runs the AI on the audio and deletes it immediately. Only short text labels like
 | D4 | **Phone-only mode runs YAMNet only, no Whisper.** It catches thuds, screams, glass, water, TV, but not help words. We report this as a finding ("the phone alone cannot do help words in 5 languages, which is why the hub exists"). | Whisper on an old Android phone means compiling whisper.cpp with the NDK and JNI glue, days of work for a result we expect to be bad. |
 | D5 | **Whisper never auto-detects language.** Each home has a list of expected languages in settings. For each speech segment we run Whisper once per configured language and match help words from any result. | Language detection on a one-word shout is unreliable. |
 | D6 | **Whisper runs on VAD segments, not on 1-second chunks.** Accumulate speech until VAD says it ended, then transcribe. | Transcribing 1-second slices breaks words. |
-| D7 | **Firestore writes stay inside the free quota (20k writes/day).** The hub merges consecutive identical labels into one event (start/end), drops `Silence` and low-confidence frames, and writes events in batches every 1–5 minutes. Heartbeat every 5 minutes, not every minute. **Alerts are written immediately**, never batched. | 3 listeners at 1 label/second would be 260k writes/day. |
-| D8 | **Detection and alerts are real-time on the hub.** The batching in D7 only delays the timeline in the cloud, never an alert. | |
+| D7 | **Firestore writes stay inside the free quota (20k writes/day).** The hub merges consecutive identical labels into one event (start/end), drops `Silence` and low-confidence frames, and writes one document per event when the event ends (D30, no batching). Heartbeat every 5 minutes, not every minute. **Alerts are written immediately.** | 3 listeners at 1 label/second would be 260k writes/day; one document per event keeps the demo and our testing at a few hundred. |
+| D8 | **Detection and alerts are real-time on the hub.** The cloud timeline gets each event when it ends; an alert never waits. | |
 | D9 | Alerts: **Telegram bot** first (Level 1), **FCM push** in the family app second (Level 2). Both stay. | Telegram is the fastest end-to-end demo and reaches the iOS teammate's phone too. |
 | D10 | **Listener phones:** Ebrahim's Nothing CMF Phone 2 Pro (Android 15) and the Android teammate's phone. Any Android 8+ phone works; "old phone" in the doc just means a spare one left plugged in. There is no iOS listener. | |
 | D11 | **Demo network:** a personal phone's hotspot. Laptop and listener phones join it. The listener phone is never the hotspot. No travel router. | University Wi-Fi blocks phone-to-laptop traffic. A MacBook cannot be on Wi-Fi and share Wi-Fi at the same time. |
@@ -69,7 +69,7 @@ Inside the house (audio never leaves)
        keeps a few seconds of audio in RAM, then discards it. Never written to disk.
 
 Leaving the house (labels and alerts only, ~150 bytes each)
-  Hub  --batched events, heartbeat, alerts-->  Firestore
+  Hub  --events, heartbeat, alerts-->  Firestore
   Hub  --instant alert-->  Telegram bot API
   Firestore  <--settings (help words, languages, contacts)--  Family app
   Cloud Functions + Scheduler (or a hub loop, see section 11): routine check, long-silence
@@ -183,7 +183,10 @@ only hard rule is that a milestone is not "done" until the test for it passes on
   Done: `rules.py` (plus crying and smoke alarm from the table in section 4) and `telegram.py`;
   `serve` prints each alert with its hops and sends it to Telegram; `telegram-test` checks the
   bot and finds the group's chat id. Since E7, thud and glass ask first (D26, D27).
-- E6. Firestore sync: batched events every 1–5 min, heartbeat every 5 min, alerts immediately.
+- E6. Firestore sync: one document per event when it ends, heartbeat every 5 min, alerts
+  immediately (D30). Done: `hub/nonna_hub/cloud_sync.py`, in the format of
+  docs/firestore-schema.md; alerts also get their voice check result, follow-up and timings; writes
+  wait while offline (D37). Checked against the real project under a test home.
   Offline queue: if internet drops, keep working and flush later.
 - E7. Voice check hub side: send `ask` to the phone, listen 30 s for "fine"-words or help words,
   alert on silence or help, follow-up message if she answers after an instant alert.
@@ -197,7 +200,8 @@ only hard rule is that a milestone is not "done" until the test for it passes on
   `homes/{id}` once E6 exists.
 - E9. If no billing (section 11): the routine / long-silence / offline checks as a 15-minute loop
   inside the hub, using B's logic. Offline done, in either billing path: a room that sends nothing
-  for 5 min alerts once, and again when it is back (D29). Left: routine and long silence (C5).
+  for 5 min alerts once, and again when it is back (D29). Routine and long silence done with B's
+  `nonna_cloud.checks.Checker`, switched on by `serve --routine-checks` (D37).
 - E10. Dockerfile for the hub so B can deploy the identical image to Cloud Run. Done:
   `hub/Dockerfile`, with YAMNet and Whisper inside so a cold start downloads nothing; settings
   through environment variables; deploy notes in `hub/README.md`.
@@ -339,7 +343,8 @@ Three people, three AI assistants. To avoid redundant or diverging work:
 - Android 14+ requires `foregroundServiceType="microphone"` plus `FOREGROUND_SERVICE_MICROPHONE`
   for background recording. OEMs (Xiaomi, Samsung, Nothing) kill services unless battery is set
   to "Unrestricted".
-- Firestore free quota is 20k writes/day. See D7.
+- Firestore free quota is 20k writes/day. One document per event (D30) uses a few hundred in a
+  demo; just don't leave the hub running all day next to a TV.
 - Cloud Run cold start with YAMNet + Whisper is 10–30 s. Run experiment trials against a warm
   instance and report cold start separately.
 - Whisper hallucinates on short noisy clips. Only run it on VAD-detected speech, require a clear

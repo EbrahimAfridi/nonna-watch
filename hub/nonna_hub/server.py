@@ -17,6 +17,8 @@ from importlib.metadata import version
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from nonna_cloud.checks import Checker
+from nonna_cloud.routine import Finding
 from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnected
 
@@ -38,15 +40,25 @@ from nonna_hub.protocol import (
     parse_frame,
     parse_message,
 )
+from nonna_hub.cloud_sync import CloudSync, listener_id, timestamp
 from nonna_hub.rules import CHECK_AFTER, CHECK_FIRST, Alert, RoomRules, follow_up_message
 from nonna_hub.sound import HOP_SAMPLES, SoundClassifier
 from nonna_hub.speech import SpeechListener, Transcriber, Utterance
 from nonna_hub.telegram import Telegram, TelegramError
-from nonna_hub.voice_check import ANSWER_WAIT_S, ASK_PLAYED_TIMEOUT_S, QUESTIONS, VoiceCheck, is_question
+from nonna_hub.voice_check import (
+    ANSWER_WAIT_S,
+    ASK_PLAYED_TIMEOUT_S,
+    QUESTIONS,
+    VoiceCheck,
+    is_question,
+    starts_during_question,
+)
 
 HELLO_TIMEOUT_S = 10
 OFFLINE_AFTER_MS = 5 * 60_000  # CONTEXT.md section 4: no heartbeat from a listener for 5 min
+HEARTBEAT_MS = 5 * 60_000  # the hub's Firestore heartbeats, which the cloud and the family app read
 WATCH_EVERY_S = 30
+ROUTINE_EVERY_S = 15 * 60  # E9: B's routine and silence checks (cloud/), in billing Path B
 
 # The phone hung up, or the hub itself closed that connection because a newer one replaced it
 # (Starlette raises WebSocketDisconnected for a socket the app already closed).
@@ -84,6 +96,8 @@ class Hub:
         new_speech_listener: Callable[[], SpeechListener],
         send_alert: Callable[[str], None] | None = None,
         checkin_language: str = "en",
+        sync: CloudSync | None = None,
+        checker: Checker | None = None,
     ):
         self._token = token.encode()
         self.hub_id = hub_id
@@ -91,6 +105,10 @@ class Hub:
         self.categorizer = Categorizer(classifier.labels)
         self._new_speech_listener = new_speech_listener
         self._send_alert = send_alert
+        self._sync = sync
+        self._checker = checker
+        self._findings_done: set[str] = set()  # alert ids answered fine or sent, so not asked again
+        self._heartbeat_ms = 0  # when the hub last wrote its heartbeats
         self._question = QUESTIONS[checkin_language]
         self._tasks: set[asyncio.Task] = set()  # background work, held so it is not garbage-collected
         self.listeners: dict[str, Listener] = {}  # by room: one listener per room
@@ -133,6 +151,7 @@ class Hub:
             phone = hello.device_model or "unknown phone"
             print(f"{hello.room:<12} connected: {phone}, app {hello.app_version or '?'}")
             self._heard_from(hello.room)
+            self._write_phone(hello.room)  # the family app sees a new phone at once, not at the next heartbeat
             try:
                 while True:
                     message = await websocket.receive()
@@ -153,15 +172,22 @@ class Hub:
         finally:
             if listener:
                 for event in listener.events.close_all():
-                    print_event(listener.room, event)
+                    self._event_ended(listener, event)
                 if self.listeners.get(listener.room) is listener:
                     del self.listeners[listener.room]
                     print(f"{listener.room:<12} disconnected")
 
-    async def start_voice_check(self, listener: Listener, alert: Alert | None = None, alert_sent: bool = False) -> str:
+    async def start_voice_check(
+        self,
+        listener: Listener,
+        alert: Alert | None = None,
+        alert_sent: bool = False,
+        reason: str = "manual",
+        detected: tuple[int, int] | None = None,
+    ) -> VoiceCheck:
         """Have the phone ask "Are you okay?", then wait for the answer in the background."""
         text, lang = self._question
-        check = VoiceCheck(f"{listener.room}-{now_ms()}", alert, alert_sent)
+        check = VoiceCheck(f"{listener.room}-{now_ms()}", alert.kind if alert else reason, alert, alert_sent, detected)
         listener.voice_check = check
         try:
             ask = {"type": "ask", "ask_id": check.ask_id, "reason": check.reason, "text": text, "lang": lang}
@@ -171,7 +197,12 @@ class Hub:
             raise
         print(f"{listener.room:<12} asked: {text}")
         self._in_background(self._finish_voice_check(listener, check))
-        return check.ask_id
+        return check
+
+    async def stop(self) -> None:
+        """Give the queued Firestore writes a few seconds when the hub stops; offline, they are lost."""
+        if self._sync:
+            await asyncio.to_thread(self._sync.flush, 5)
 
     def devices(self) -> list[dict]:
         return [
@@ -235,7 +266,7 @@ class Hub:
             window_ms = capture_ms + (start - frame_start) * 1000 // SAMPLE_RATE
             detections = self.categorizer.detect(self.classifier.scores(window))
             for event in listener.events.push(window_ms, detections):
-                print_event(listener.room, event)
+                self._event_ended(listener, event)
             alerts += listener.rules.on_window(window_ms, detections)
         await self._act_on(listener, alerts)
         # Whisper takes about a second, so it runs off the event loop and other rooms keep going.
@@ -259,15 +290,19 @@ class Hub:
         for alert in alerts:
             if alert.kind in CHECK_FIRST and asker.voice_check is None:
                 try:
-                    await self.start_voice_check(asker, alert)
+                    # Timed now: Experiment 1 measures detection, not how long she takes to answer.
+                    await self.start_voice_check(asker, alert, detected=(listener.last_frame_ms, now_ms()))
                 except PHONE_GONE:
                     self._raise_alert(listener, replace(alert, check_outcome="not_played"))
                 continue
             # Also reached by a thud or glass while a check is already running: alert straight away.
-            self._raise_alert(listener, alert)
-            if alert.kind in CHECK_AFTER and asker.voice_check is None:
-                with contextlib.suppress(*PHONE_GONE):
+            checking = alert.kind in CHECK_AFTER and asker.voice_check is None
+            self._raise_alert(listener, alert, checking=checking)
+            if checking:
+                try:
                     await self.start_voice_check(asker, alert, alert_sent=True)
+                except PHONE_GONE:
+                    self._update_alert(listener.room, alert, {"voiceCheck": {"asked": True, "result": "not_played"}})
 
     async def _finish_voice_check(self, listener: Listener, check: VoiceCheck) -> None:
         try:
@@ -282,6 +317,7 @@ class Hub:
             if listener.voice_check is check:
                 listener.voice_check = None
         print(f"{listener.room:<12} {clock(now_ms())}   CHECK        {check.reason}: {outcome} {detail}".rstrip())
+        check.done.set_result((outcome, detail))
         if outcome == "fine" and check.alert:
             # Otherwise a real fall or "aiuto" within a minute of "sto bene" would be swallowed.
             listener.rules.reassured(check.alert.kind)
@@ -290,20 +326,108 @@ class Hub:
             return  # asked for through POST /ask: the line above is the whole result
         if not check.alert_sent:
             if outcome != "fine":
-                self._raise_alert(listener, replace(check.alert, check_outcome=outcome))
-        elif outcome == "fine":
+                self._raise_alert(listener, replace(check.alert, check_outcome=outcome), detected=check.detected)
+            return
+        stored = {"voiceCheck": {"asked": True, "result": outcome}}
+        if outcome == "fine":
             print(f"{listener.room:<12} {clock(check.alert.at_ms)}   FOLLOW-UP    answered \"{detail}\"")
             message = follow_up_message(check.alert, listener.room, detail)
+            stored["followUp"] = message
             self._deliver_later(listener.room, check.alert.at_ms, message)
+        self._update_alert(listener.room, check.alert, stored)
 
     async def watch_listeners(self) -> None:
-        """Report a room whose phone has sent nothing, not even a heartbeat, for 5 minutes."""
+        """Every 30 s, report rooms whose phone went quiet; every 5 minutes, write the heartbeats."""
         while True:
-            await asyncio.sleep(WATCH_EVERY_S)
             for room, heard_ms in self.last_heard_ms.items():
                 if room not in self._offline and now_ms() - heard_ms >= OFFLINE_AFTER_MS:
                     self._offline.add(room)
                     self._announce(room, Alert("offline", heard_ms))
+            if now_ms() - self._heartbeat_ms >= HEARTBEAT_MS:
+                self._write_heartbeats()
+            await asyncio.sleep(WATCH_EVERY_S)
+
+    async def watch_routines(self) -> None:
+        """Every 15 minutes, B's routine and silence checks, asking "Are you okay?" first as the table says."""
+        while self._checker:
+            await asyncio.sleep(ROUTINE_EVERY_S)
+            try:
+                for finding in await asyncio.to_thread(self._checker.run):
+                    await self._on_finding(finding)
+            except (Exception, SystemExit) as error:  # nonna_cloud exits on a missing home: keep the hub up
+                print(f"Routine checks failed, trying again in 15 minutes: {error}")
+
+    async def _on_finding(self, finding: Finding) -> None:
+        # The checker finds a missed routine again on every run until an alert exists for it today.
+        if finding.alert_id in self._findings_done:
+            return
+        place = finding.room or "home"
+        voice_result = await self._ask_about(finding) if finding.voice_check else None
+        if voice_result == "busy":
+            return  # asked on the next run instead of reported without asking
+        self._findings_done.add(finding.alert_id)
+        if voice_result == "fine":
+            print(f"{place:<12} {clock(now_ms())}   CHECK        {finding.type}: fine, not reported")
+            return
+        at_ms = int(finding.time.timestamp() * 1000)
+        after_check = f" after the check: {voice_result}" if voice_result else ""
+        print(f"{place:<12} {clock(at_ms)}   ALERT        {finding.type}{after_check}")
+        self._deliver_later(place, at_ms, finding.message)  # the family hears it even if Firestore is down
+        try:
+            await asyncio.to_thread(self._checker.report, finding, voice_result)
+        except Exception as error:
+            print(f"{place:<12} {clock(at_ms)}   NOT STORED   {finding.alert_id}: {error}")
+
+    async def _ask_about(self, finding: Finding) -> str | None:
+        """Ask in the finding's room, or in every room when the whole home is silent. Help anywhere wins.
+
+        None means no phone to ask through; "busy" means every phone is already in another check.
+        """
+        rooms = [finding.room] if finding.room else list(self.listeners)
+        phones = [self.listeners[room] for room in rooms if room in self.listeners]
+        if not phones:
+            return None
+        askers = [listener for listener in phones if listener.voice_check is None]
+        if not askers:
+            return "busy"
+        outcomes = await asyncio.gather(*(self._ask_and_wait(listener, finding.type) for listener in askers))
+        for outcome in ("help", "fine"):
+            if outcome in outcomes:
+                return outcome
+        return outcomes[0]
+
+    async def _ask_and_wait(self, listener: Listener, reason: str) -> str:
+        try:
+            check = await self.start_voice_check(listener, reason=reason)
+        except PHONE_GONE:
+            return "not_played"
+        outcome, _detail = await check.done
+        return outcome
+
+    def _write_heartbeats(self) -> None:
+        """devices/hub, which the cloud watches to notice a dead hub, and one document per room's phone."""
+        self._heartbeat_ms = now_ms()
+        if not self._sync:
+            return
+        hub = {"kind": "hub", "room": "", "lastHeartbeat": timestamp(self._heartbeat_ms), "online": True, "target": "hub"}
+        self._sync.device(self.hub_id, hub)
+        for room in self.last_heard_ms:
+            self._write_phone(room)
+
+    def _write_phone(self, room: str) -> None:
+        if not self._sync:
+            return
+        phone = {
+            "kind": "listener",
+            "room": room,
+            "lastHeartbeat": timestamp(self.last_heard_ms[room]),
+            "online": room not in self._offline,
+            "target": "hub",
+        }
+        listener = self.listeners.get(room)
+        if listener and listener.battery_pct is not None:
+            phone["battery"] = listener.battery_pct
+        self._sync.device(listener_id(room), phone)
 
     def _heard_from(self, room: str) -> None:
         self.last_heard_ms[room] = now_ms()
@@ -312,32 +436,60 @@ class Hub:
             self._announce(room, Alert("back_online", now_ms()))
 
     def _announce(self, room: str, alert: Alert) -> None:
-        """An alert about the listener itself, so there is no sound behind it to time."""
+        """A phone went quiet or came back: there is no sound behind it to time."""
         print(f"{room:<12} {clock(alert.at_ms)}   ALERT        {alert.kind}")
+        if self._sync:
+            self._sync.alert(room, alert, voice_check=None, timings=None)
+            self._sync.device(listener_id(room), {"online": alert.kind == "back_online"})
         self._deliver_later(room, alert.at_ms, alert.message(room))
 
-    def _raise_alert(self, listener: Listener, alert: Alert) -> None:
-        """Print the alert with how long it took to get here, then send it without waiting."""
-        received_s = (listener.last_frame_ms - alert.at_ms) / 1000
-        detected_s = (now_ms() - alert.at_ms) / 1000
+    def _raise_alert(
+        self,
+        listener: Listener,
+        alert: Alert,
+        checking: bool = False,
+        detected: tuple[int, int] | None = None,
+    ) -> None:
+        """Print the alert with how long it took to get here, store it, then send it without waiting."""
+        received_ms, detected_ms = detected or (listener.last_frame_ms, now_ms())
+        received_s = (received_ms - alert.at_ms) / 1000
+        detected_s = (detected_ms - alert.at_ms) / 1000
         after_check = f"after the check: {alert.check_outcome}" if alert.check_outcome else ""
         what = " ".join(part for part in (alert.kind, alert.detail, after_check) if part)
         timing = f"received +{received_s:.1f} s, detected +{detected_s:.1f} s"
         print(f"{listener.room:<12} {clock(alert.at_ms)}   ALERT        {what}   {timing}")
-        self._deliver_later(listener.room, alert.at_ms, alert.message(listener.room))
+        if self._sync:
+            timings = {"capturedMs": alert.at_ms, "hubReceivedMs": received_ms, "aiDoneMs": detected_ms}
+            voice_check = alert.check_outcome or ("pending" if checking else None)
+            self._sync.alert(listener.room, alert, voice_check, timings)
+        self._deliver_later(listener.room, alert.at_ms, alert.message(listener.room), timed_alert=alert)
 
-    def _deliver_later(self, room: str, at_ms: int, text: str) -> None:
+    def _update_alert(self, room: str, alert: Alert, fields: dict) -> None:
+        if self._sync:
+            self._sync.update_alert(room, alert, fields)
+
+    def _event_ended(self, listener: Listener, event: Event) -> None:
+        print_event(listener.room, event)
+        check = listener.voice_check
+        if check and starts_during_question(event.start_ms, check.sent_ms, check.ended_ms):
+            return  # the phone playing "Are you okay?" is not activity in the home
+        if self._sync:
+            self._sync.event(listener.room, event)
+
+    def _deliver_later(self, room: str, at_ms: int, text: str, timed_alert: Alert | None = None) -> None:
         if self._send_alert:
-            self._in_background(self._deliver(room, at_ms, text))
+            self._in_background(self._deliver(room, at_ms, text, timed_alert))
 
-    async def _deliver(self, room: str, at_ms: int, text: str) -> None:
+    async def _deliver(self, room: str, at_ms: int, text: str, timed_alert: Alert | None) -> None:
         try:
             await asyncio.to_thread(self._send_alert, text)
         except (OSError, TelegramError) as error:
             print(f"{room:<12} {clock(at_ms)}   NOT SENT     {error}")
             return
-        sent_s = (now_ms() - at_ms) / 1000
-        print(f"{room:<12} {clock(at_ms)}   SENT         +{sent_s:.1f} s after the sound")
+        sent_ms = now_ms()
+        print(f"{room:<12} {clock(at_ms)}   SENT         +{(sent_ms - at_ms) / 1000:.1f} s after the sound")
+        if timed_alert:
+            self._update_alert(room, timed_alert, {"timings": {"alertSentMs": sent_ms}})
 
     def _in_background(self, work: Coroutine) -> None:
         task = asyncio.create_task(work)
@@ -379,9 +531,11 @@ class Hub:
 def create_app(hub: Hub) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
-        watcher = asyncio.create_task(hub.watch_listeners())
+        watchers = [asyncio.create_task(hub.watch_listeners()), asyncio.create_task(hub.watch_routines())]
         yield
-        watcher.cancel()
+        for watcher in watchers:
+            watcher.cancel()
+        await hub.stop()
 
     app = FastAPI(title="Nonna Watch hub", lifespan=lifespan)
     bearer = HTTPBearer(auto_error=False)
@@ -407,7 +561,7 @@ def create_app(hub: Hub) -> FastAPI:
         if listener.voice_check:
             raise HTTPException(status.HTTP_409_CONFLICT, f"a voice check is already running in {room}")
         try:
-            return {"ask_id": await hub.start_voice_check(listener)}
+            return {"ask_id": (await hub.start_voice_check(listener)).ask_id}
         except PHONE_GONE:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"the {room} listener just left") from None
 
@@ -418,7 +572,15 @@ def create_app(hub: Hub) -> FastAPI:
     return app
 
 
-def serve(token: str, hub_id: str, port: int, languages: list[str], telegram: Telegram | None) -> None:
+def serve(
+    token: str,
+    hub_id: str,
+    port: int,
+    languages: list[str],
+    telegram: Telegram | None,
+    sync: CloudSync | None,
+    routine_checks: bool = False,
+) -> None:
     transcriber = Transcriber()
     hub = Hub(
         token,
@@ -427,6 +589,8 @@ def serve(token: str, hub_id: str, port: int, languages: list[str], telegram: Te
         lambda: SpeechListener(transcriber, languages, DEFAULT_HELP_WORDS),
         send_alert=telegram.send if telegram else None,
         checkin_language=languages[0],
+        sync=sync,
+        checker=Checker(sync.db, sync.home_id) if sync and routine_checks else None,
     )
     print(f"Phones connect to ws://{lan_address()}:{port}/ws/listener with HUB_TOKEN from hub/.env")
     print(f"Listening for help words in: {', '.join(languages)}. Check-in question: {QUESTIONS[languages[0]][0]}")
@@ -434,6 +598,12 @@ def serve(token: str, hub_id: str, port: int, languages: list[str], telegram: Te
         print("Alerts go to the Telegram group in TELEGRAM_CHAT_ID")
     else:
         print("Telegram is not set up, so alerts only appear here (see hub/README.md)")
+    if sync:
+        print(f"Events, alerts and heartbeats go to Firestore under homes/{sync.home_id}")
+    else:
+        print("Firestore is not set up, so nothing is stored in the cloud (see hub/README.md)")
+    if routine_checks:
+        print("Routine and silence checks run here every 15 minutes (billing Path B)")
     uvicorn.run(create_app(hub), host="0.0.0.0", port=port)
 
 

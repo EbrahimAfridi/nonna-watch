@@ -12,6 +12,7 @@ import sounddevice
 from nonna_hub import fake_phone, server
 from nonna_hub.audio import SAMPLE_RATE, WindowSlicer, file_chunks, microphone_chunks
 from nonna_hub.categories import Categorizer
+from nonna_hub.cloud_sync import CloudSync, connect
 from nonna_hub.events import Event, EventMerger
 from nonna_hub.help_words import DEFAULT_HELP_WORDS, LANGUAGES
 from nonna_hub.protocol import ROOMS
@@ -38,6 +39,11 @@ def main() -> None:
     # Cloud Run tells the container which port to use through PORT.
     serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)), help="default: %(default)s")
     serve.add_argument("--languages", type=language_list, default="it,en", help=languages_help)
+    serve.add_argument(
+        "--routine-checks",
+        action="store_true",
+        help="run the routine and silence checks here every 15 minutes (billing Path B; needs Firestore)",
+    )
 
     phone = commands.add_parser("fake-phone", help="stream audio files or the mic to a hub, like a phone")
     phone.add_argument("--room", required=True, choices=ROOMS)
@@ -50,7 +56,10 @@ def main() -> None:
     if args.command == "listen":
         listen_to(args.files, args.raw, args.languages)
     elif args.command == "serve":
-        server.serve(hub_token(), os.environ.get("HUB_ID", "hub"), args.port, args.languages, telegram_from_env())
+        hub_id, sync = os.environ.get("HUB_ID", "hub"), cloud_sync_from_env()
+        if args.routine_checks and not sync:
+            sys.exit("--routine-checks needs Firestore: set HOME_ID and GOOGLE_APPLICATION_CREDENTIALS (hub/README.md).")
+        server.serve(hub_token(), hub_id, args.port, args.languages, telegram_from_env(), sync, args.routine_checks)
     elif args.command == "fake-phone":
         fake_phone.run(args.hub, hub_token(), args.room, args.files)
     else:
@@ -140,6 +149,15 @@ def print_labels(classifier: SoundClassifier, chunks: Iterable[np.ndarray]) -> N
             top = classifier.top_labels(classifier.scores(window), LABELS_PER_LINE)
             labels = "   ".join(f"{label} {score:.2f}" for label, score in top)
             print(f"{start / SAMPLE_RATE:7.1f} s   {labels}")
+
+
+def cloud_sync_from_env() -> CloudSync | None:
+    key_path, home_id = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""), os.environ.get("HOME_ID", "")
+    if not (key_path and home_id):
+        return None
+    if not Path(key_path).is_file():
+        sys.exit(f"GOOGLE_APPLICATION_CREDENTIALS points to {key_path}, which does not exist.")
+    return CloudSync(connect(key_path), home_id)
 
 
 def telegram_from_env() -> Telegram | None:

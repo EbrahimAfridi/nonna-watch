@@ -1,0 +1,9 @@
+# Only what hub/Dockerfile copies, so nothing else in the repository (keys, recordings) is ever sent.
+*
+!hub/pyproject.toml
+!hub/uv.lock
+!hub/README.md
+!hub/nonna_hub
+!cloud/pyproject.toml
+!cloud/src
+**/__pycache__
