@@ -21,3 +21,6 @@ docs/          requirements, API contract, schema
 
 Each folder gets its own README as the part is built. Target: a teammate can clone and have that
 part running in 15 minutes.
+
+- Hub: [hub/README.md](hub/README.md)
+- Android: [android/README.md](android/README.md)

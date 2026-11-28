@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The WebSocket to the hub. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Microphone, asked for at runtime when the user taps Start. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- A foreground service of type "microphone" (Android 14+ needs both). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Shows the "listening" notification on Android 13+; the service runs without it. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The partial WakeLock and the WifiLock that keep listening going with the screen off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- usesCleartextTraffic: the hub on the home network is plain ws://, which Android blocks by
+         default (docs/api-contract.md, "Known limits"). The Cloud Run copy uses wss://. -->
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".ListenerService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+    </application>
+</manifest>
