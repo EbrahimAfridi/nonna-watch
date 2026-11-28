@@ -8,7 +8,8 @@ name says should happen (testset.py):
 
   help_*            caught if the hub printed HELP
   thud_/scream_/... caught if the hub heard that category (thud, scream, glass, ...)
-  kitchen_/tv_/...  any ALERT or HELP is a false alarm; tv_ and radio_ give false alarms per hour
+  kitchen_/tv_/...  every ALERT is a false alarm (a help word prints HELP and then ALERT: that is ONE
+                    alarm, so HELP lines are not counted again); tv_ and radio_ give false alarms per hour
 
 Results: results/exp3_detection.csv (one row per file). charts.py summarises them.
 Audio never leaves the laptop; nothing here sends anything.
@@ -68,7 +69,8 @@ def score(clip: Clip, heard: dict, duration_s: float | None) -> dict:
         expected, caught = clip.expect_category, clip.expect_category in heard["categories"]
     else:
         expected, caught = "nothing", None
-    false_alarms = len(heard["alerts"]) + len(heard["help_words"]) if clip.negative else 0
+    # ALERT is what would reach the family. A help word also prints HELP first; counting both doubled it.
+    false_alarms = len(heard["alerts"]) if clip.negative else 0
     return {"file": clip.path.name, "kind": clip.kind, "lang": clip.lang or "", "expected": expected,
             "caught": "" if caught is None else int(caught), "false_alarms": false_alarms,
             "categories": " ".join(heard["categories"]), "help_words": "; ".join(heard["help_words"]),

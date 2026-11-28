@@ -114,7 +114,7 @@ def test_listen_output_is_scored_per_file():
     rows = {n: detection.score(parse(Path(n)), detection.read_section(sections[n]), 60.0) for n in names}
     assert rows["help_it_anna_01.wav"]["caught"] == 1
     assert rows["thud_bag_01.wav"]["caught"] == 1 and rows["thud_bag_01.wav"]["false_alarms"] == 0
-    assert rows["tv_rai1_01.wav"]["caught"] == "" and rows["tv_rai1_01.wav"]["false_alarms"] == 2
+    assert rows["tv_rai1_01.wav"]["caught"] == "" and rows["tv_rai1_01.wav"]["false_alarms"] == 1   # HELP + ALERT = one alarm
 
 
 # ------------------------------------------------------------------ Experiment 5 parsing
@@ -214,3 +214,49 @@ def test_no_results_no_charts(tmp_path, monkeypatch):
     monkeypatch.setattr(charts, "CHARTS", tmp_path / "charts")
     charts.main()
     assert not (tmp_path / "charts").exists()
+
+
+# ------------------------------------------------------------------ review fixes (PR #3)
+
+def test_a_trial_ignores_notices_other_rooms_and_late_alerts_from_before():
+    alerts = {a.kind + a.room: a for a in hublog.parse(HUB_OUTPUT.splitlines())}
+    help_word, offline = alerts["help_wordbathroom"], alerts["offlinekitchen"]
+    assert trials.belongs_to_trial(help_word, "bathroom", None, "14:03:11.0")
+    assert not trials.belongs_to_trial(help_word, "bathroom", None, "14:03:30.0")    # sound came before the trial
+    assert not trials.belongs_to_trial(help_word, "kitchen", None, "14:03:11.0")     # another room
+    assert not trials.belongs_to_trial(help_word, "bathroom", {"thud"}, "14:03:11.0")
+    assert not trials.belongs_to_trial(offline, "kitchen", None, "14:04:00.0")       # a notice, not a reaction
+    assert trials.belongs_to_trial(offline, "kitchen", {"offline"}, "14:04:00.0")    # unless asked for
+
+
+def test_phone_clock_a_little_behind_still_counts_and_midnight_is_fine():
+    a = hublog.AlertTiming(room="kitchen", at="00:00:01.0", kind="thud")
+    assert trials.belongs_to_trial(a, "kitchen", None, "23:59:58.0")
+    b = hublog.AlertTiming(room="kitchen", at="14:00:09.0", kind="thud")
+    assert trials.belongs_to_trial(b, "kitchen", None, "14:00:10.0")                 # 1 s skew allowed
+
+
+def test_waiting_skips_alerts_that_are_not_this_trials(tmp_path):
+    log = tmp_path / "hub.log"
+    log.write_text(HUB_OUTPUT, encoding="utf-8")
+    alert, _ = trials.wait_for_alert(log, 0, hublog.HubLogReader(), 0.5,
+                                     accept=lambda a: trials.belongs_to_trial(a, "bathroom", {"thud"}, "14:07:00.0"))
+    assert alert.kind == "thud" and alert.sent_s == 41.9
+
+
+def test_battery_chart_keeps_runs_apart_and_skips_charging(tmp_path, monkeypatch):
+    monkeypatch.setattr(charts, "CHARTS", tmp_path)
+    drawn = {}
+    real_plot = charts.plt.Axes.plot
+
+    def spy(ax, xs, ys, *a, **kw):
+        drawn[kw.get("label")] = list(ys)
+        return real_plot(ax, xs, ys, *a, **kw)
+
+    monkeypatch.setattr(charts.plt.Axes, "plot", spy)
+    rows = [{"run": run, "time": f"2026-12-0{day}T10:{m:02d}:00", "mode": "streaming", "level_pct": lvl,
+             "charging": charging, "app_cpu_pct": 9}
+            for run, day in (("streaming 2026-12-01T10:00", 1), ("streaming 2026-12-02T10:00", 2))
+            for m, lvl, charging in ((0, 90, "False"), (30, 87, "False"), (59, 100, "True"))]
+    assert charts.battery(rows) is not None
+    assert drawn == {"streaming 2026-12-01T10:00": [90, 87], "streaming 2026-12-02T10:00": [90, 87]}

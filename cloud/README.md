@@ -168,18 +168,23 @@ uv run python -m nonna_cloud.checks --now 10:30 --report --telegram
 The first line writes 14 normal days, plus a normal morning today with no kitchen. The second line says
 "No kitchen sounds yet today. Maria is usually in the kitchen by 08:11", and posts it to Telegram.
 
+You can rehearse it as often as you like: `--clear` also deletes **today's** routine alerts, so the live demo
+still fires after a rehearsal. If the hub runs the checks (`serve --routine-checks`), restart it too, because it
+remembers in memory what it already reported today.
+
 ## For teammates
 
 - **Ebrahim (hub, E9):** run the checks every 15 minutes with `from nonna_cloud.checks import Checker`
   (example at the top of `checks.py`). Add `nonna-cloud = { path = "../cloud" }` to the hub's dependencies.
   `Checker.run()` returns findings; run the voice check for those with `voice_check=True`, then call
-  `Checker.report()` and send the Telegram message.
+  `Checker.report()` and send the Telegram message. `report()` returns the alert it wrote, or `None` if that
+  alert already existed. A missing home raises `MissingHome` (a normal `LookupError`), not `SystemExit`.
 - **Ebrahim (hub, E6):** follow [docs/firestore-schema.md](../docs/firestore-schema.md). Events are D30: one
-  `homes/{id}/events/{deviceId}_{startEpochMillis}` document per event, with `room`, `deviceId`, `sound`,
+  `homes/{id}/events/{deviceId}_{startEpochMillis}_{category}` document per event (D38), with `room`, `deviceId`, `sound`,
   `confidence`, `start`, `end`, `source: "hub"`, and please also `category` (your category name; the routine
   learner uses it). Use Firestore `Timestamp`s (Python: timezone-aware `datetime`); the id makes offline-queue
-  retries overwrite instead of duplicating. Write a `devices/hub` heartbeat every 5 minutes (the cloud's
-  hub-offline check reads it). Alert `type`s are your `rules.py` names.
+  retries overwrite instead of duplicating. Write a `devices/{HUB_ID}` heartbeat (`kind: "hub"`) every 5 minutes; the
+  cloud's hub-offline check reads every hub document (D39). Alert `type`s are your `rules.py` names.
 - **A (Android):** the "my homes" query must be
   `whereArrayContains("memberEmails", user.email.lowercase())`, because without that filter the rules
   refuse the query. Alerts can only be moved forward (`sent → seen → resolved`), and `answeredBy` must be

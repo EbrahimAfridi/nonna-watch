@@ -42,6 +42,10 @@ from nonna_cloud.routine import Finding, Routine, learn, run_checks, settings_fo
 HISTORY_DAYS = 14
 
 
+class MissingHome(LookupError):
+    """The home document doesn't exist (wrong --home, or the seed hasn't run)."""
+
+
 class Checker:
     def __init__(self, db, home_id: str):
         self.db = db
@@ -101,7 +105,7 @@ class Checker:
         now = now or datetime.now(timezone.utc)
         home = self.home_ref.get().to_dict()
         if home is None:
-            raise SystemExit(f"No home '{self.home_id}' in Firestore.")
+            raise MissingHome(f"No home '{self.home_id}' in Firestore.")
         tz = ZoneInfo(home.get("timezone", "Europe/Rome"))
         s = settings_for(home)
 
@@ -113,8 +117,11 @@ class Checker:
         alerts = self.home_ref.collection("alerts")
         return [f for f in findings if not alerts.document(f.alert_id).get().exists]
 
-    def report(self, f: Finding, voice_result: str | None = None) -> dict:
-        """Write the alert document (schema: homes/{id}/alerts). Returns what was written."""
+    def report(self, f: Finding, voice_result: str | None = None) -> dict | None:
+        """Write the alert document (schema: homes/{id}/alerts).
+
+        Returns what was written, or None if that alert already existed (another run reported it first).
+        """
         doc = {
             "type": f.type,
             "severity": f.severity,
@@ -136,6 +143,7 @@ class Checker:
         except Exception as e:                     # google.api_core.exceptions.AlreadyExists
             if type(e).__name__ != "AlreadyExists":
                 raise
+            return None
         return doc
 
 
@@ -159,11 +167,15 @@ def _once(checker: Checker, now: datetime | None, report: bool, telegram: bool) 
         print(f"[{when}] all normal")
         return
     chat_id = checker.home_ref.get().to_dict().get("telegramChatId", "") if telegram else ""
+    written = 0
     for f in findings:
         ask = "  (the hub asks 'Are you okay?' first)" if f.voice_check else ""
         print(f"[{when}] {f.type}: {f.message}{ask}")
         if report:
-            checker.report(f)
+            if checker.report(f) is None:
+                print("   (already reported by another run, so not posted again)")
+                continue
+            written += 1
             if telegram:
                 if chat_id:
                     from nonna_cloud.telegram_setup import send_message
@@ -171,7 +183,7 @@ def _once(checker: Checker, now: datetime | None, report: bool, telegram: bool) 
                 else:
                     print("   (no telegramChatId on the home, so nothing was posted)")
     if report:
-        print(f"Wrote {len(findings)} alert(s).")
+        print(f"Wrote {written} alert(s).")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -190,9 +202,16 @@ def main(argv: list[str] | None = None) -> None:
     checker = Checker(connect(emulator=args.emulator, key=args.key), args.home)
     now = _parse_now(args.now, ZoneInfo("Europe/Rome"))
     while True:
-        _once(checker, now, args.report, args.telegram)
         if not args.loop:
+            try:
+                _once(checker, now, args.report, args.telegram)
+            except MissingHome as error:      # a plain message on the command line, not a traceback
+                raise SystemExit(str(error))
             return
+        try:
+            _once(checker, now, args.report, args.telegram)
+        except Exception as error:            # a network blip or a Telegram hiccup: try again next time
+            print(f"Check failed, trying again in {args.every:g} min: {error}")
         time.sleep(args.every * 60)
         now = None if not args.now else now + timedelta(minutes=args.every)
 

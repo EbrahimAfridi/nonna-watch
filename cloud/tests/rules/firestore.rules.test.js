@@ -204,6 +204,12 @@ describe('events (the timeline)', () => {
     await assertFails(setDoc(doc(luca(), 'homes/maria/events/p1'), phoneEvent({ transcript: 'x' })));
   });
 
+  test('only the 5 room ids are accepted (a "/" would break the checks)', async () => {
+    await assertFails(setDoc(doc(luca(), 'homes/maria/events/p1'), phoneEvent({ room: 'garage' })));
+    await assertFails(setDoc(doc(luca(), 'homes/maria/events/p1'), phoneEvent({ room: 'kitchen/x' })));
+    await assertSucceeds(setDoc(doc(luca(), 'homes/maria/events/p1'), phoneEvent({ room: 'living_room' })));
+  });
+
   test('a stranger cannot add events', async () => {
     await assertFails(setDoc(doc(eve(), 'homes/maria/events/p1'), phoneEvent()));
   });
@@ -267,6 +273,10 @@ describe('alerts', () => {
     await assertFails(setDoc(doc(luca(), 'homes/maria/alerts/p1'), phoneAlert({ type: 'help_word' })));
   });
 
+  test('a phone alert needs a real room id', async () => {
+    await assertFails(setDoc(doc(luca(), 'homes/maria/alerts/p1'), phoneAlert({ room: 'attic' })));
+  });
+
   test('a new alert must start as "sent"', async () => {
     await assertFails(setDoc(doc(luca(), 'homes/maria/alerts/p1'), phoneAlert({ status: 'resolved' })));
   });
@@ -294,6 +304,20 @@ describe('devices', () => {
 
   test("an app cannot overwrite the hub's heartbeat", async () => {
     await assertFails(setDoc(doc(luca(), 'homes/maria/devices/hub'), beat()));
+  });
+
+  test('an app cannot create a hub document, even dressed as a listener (D39)', async () => {
+    // Before D39 there may be no devices/hub yet; an app must not be able to take the name.
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await deleteDoc(doc(ctx.firestore(), 'homes/maria/devices/hub'));
+    });
+    await assertFails(setDoc(doc(luca(), 'homes/maria/devices/hub'), beat()));
+    await assertFails(setDoc(doc(luca(), 'homes/maria/devices/laptop-hub'), beat()));
+  });
+
+  test("a listener's id must match its room", async () => {
+    await assertFails(setDoc(doc(luca(), 'homes/maria/devices/listener-bathroom'), beat()));
+    await assertFails(setDoc(doc(luca(), 'homes/maria/devices/listener-garage'), { ...beat(), room: 'garage' }));
   });
 
   test('a stranger cannot write heartbeats', async () => {

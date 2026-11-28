@@ -272,15 +272,24 @@ def whisper_sizes(rows: list[dict]) -> Path | None:
 # ------------------------------------------------------------------ Experiment 5 and laptop CPU
 
 def battery(rows: list[dict]) -> Path | None:
-    by_mode = defaultdict(list)
+    """One line per run (battery.py gives each run an id), never one line for several runs of a mode.
+    Rows taken while the phone was charging are skipped: they would hide the drain."""
+    by_run = defaultdict(list)
     for r in rows:
-        if num(r.get("level_pct")) is not None:
-            by_mode[r["mode"]].append((datetime.fromisoformat(r["time"]), num(r["level_pct"]), num(r.get("app_cpu_pct"))))
-    if not by_mode:
+        if num(r.get("level_pct")) is None or str(r.get("charging", "")).lower() == "true":
+            continue
+        by_run[r.get("run") or r["mode"]].append(
+            (datetime.fromisoformat(r["time"]), num(r["level_pct"]), num(r.get("app_cpu_pct"))))
+    if not by_run:
         return None
+    modes = [run.split(" ")[0] for run in by_run]
+    # Name a line by its mode alone when that mode has only one run, else by mode and start time.
+    names = {run: (run if modes.count(run.split(" ")[0]) > 1 else run.split(" ")[0]) for run in by_run}
     colors = ["#257de0", "#f47230", "#00b894", "#f2a600"]       # fixed order, by first appearance
     fig, ax = plt.subplots(figsize=(7, 3.2))
-    for i, (mode, pts) in enumerate(by_mode.items()):
+    for i, (run, pts) in enumerate(by_run.items()):
+        pts.sort()
+        mode = names[run]
         t0 = pts[0][0]
         xs = [(t - t0).total_seconds() / 60 for t, _, _ in pts]
         ys = [lvl for _, lvl, _ in pts]

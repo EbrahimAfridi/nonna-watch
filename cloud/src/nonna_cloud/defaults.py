@@ -18,7 +18,7 @@ DEFAULT_SETTINGS = {
 # Help words per language: exactly decision D24 (the hub's hub/nonna_hub/help_words.py).
 # Hindi and Urdu share one list with Devanagari, Urdu and Latin spellings, because Whisper may write
 # either script for either language.
-_HI_UR = ["बचाओ", "بچاؤ", "بچاو", "bachao", "मदद", "مدد", "madad"]
+_HI_UR = ["बचाओ", "بچاؤ", "بچاو", "bachao", "मदद", "مدد", "madad", "madat"]
 HELP_WORDS = {
     "it": ["aiuto", "aiutami", "aiutatemi", "soccorso"],
     "en": ["help"],

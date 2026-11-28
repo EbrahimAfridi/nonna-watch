@@ -15,7 +15,9 @@ adb is Android's command-line tool (it comes with Android Studio: platform-tools
 (`adb shell dumpsys battery unplug` only makes the phone REPORT unplugged; it still charges.)
 
 One row per --every seconds: battery %, temperature in °C, voltage, charging or not, and the app's CPU
-percent from `top`. Battery % per hour is computed later by charts.py from the first and last rows.
+percent from `top`. Every row of one run carries the same `run` id (mode + start time), so two hours of
+"streaming" on different days stay two separate lines. Battery % per hour is computed later by charts.py
+from each run's first and last rows; rows logged while charging are left out there.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from pathlib import Path
 from nonna_exp import RESULTS
 
 PACKAGE = "app.nonnawatch.listener"
-FIELDS = ["time", "mode", "label", "level_pct", "temp_c", "voltage_v", "charging", "app_cpu_pct"]
+FIELDS = ["run", "time", "mode", "label", "level_pct", "temp_c", "voltage_v", "charging", "app_cpu_pct"]
 
 
 def adb(*args: str, serial: str | None = None) -> str:
@@ -92,6 +94,7 @@ def main(argv: list[str] | None = None) -> None:
     if first["charging"]:
         print("Warning: the phone is charging, so the battery numbers won't show the real drain.")
 
+    run = f"{args.mode} {datetime.now().isoformat(timespec='minutes')}"
     new = not args.out.exists()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     end = time.monotonic() + args.minutes * 60
@@ -99,12 +102,15 @@ def main(argv: list[str] | None = None) -> None:
         w = csv.DictWriter(f, fieldnames=FIELDS)
         if new:
             w.writeheader()
-        print(f"Logging every {args.every:g} s for {args.minutes:g} min to {args.out}. Ctrl+C stops.")
+        print(f"Run '{run}'. Logging every {args.every:g} s for {args.minutes:g} min to {args.out}. Ctrl+C stops.")
         try:
             while True:
                 row = parse_battery(adb("shell", "dumpsys", "battery", serial=args.serial))
                 row["app_cpu_pct"] = parse_top(adb("shell", "top", "-b", "-n", "1", serial=args.serial), args.package)
-                row.update(time=datetime.now().isoformat(timespec="seconds"), mode=args.mode, label=args.label)
+                row.update(run=run, time=datetime.now().isoformat(timespec="seconds"), mode=args.mode,
+                           label=args.label)
+                if row["charging"]:
+                    print("Warning: charging now; this row is left out of the chart.")
                 w.writerow(row)
                 f.flush()
                 print(f"{row['time']}  {row['level_pct']}%  {row['temp_c']} °C  app CPU {row['app_cpu_pct']}")

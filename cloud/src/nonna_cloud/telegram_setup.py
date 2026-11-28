@@ -24,6 +24,10 @@ from pathlib import Path
 SECRETS = Path(__file__).resolve().parents[2] / "secrets" / "telegram.env"
 
 
+class TelegramError(RuntimeError):
+    """No token, or Telegram refused the request. A normal error, so a loop can catch it and go on."""
+
+
 def token() -> str:
     t = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if not t and SECRETS.exists():
@@ -31,7 +35,7 @@ def token() -> str:
             if line.strip().startswith("TELEGRAM_BOT_TOKEN="):
                 t = line.split("=", 1)[1].strip()
     if not t:
-        raise SystemExit(f"No bot token. Put TELEGRAM_BOT_TOKEN=... in {SECRETS} (see cloud/README.md, C2).")
+        raise TelegramError(f"No bot token. Put TELEGRAM_BOT_TOKEN=... in {SECRETS} (see cloud/README.md, C2).")
     return t
 
 
@@ -41,7 +45,7 @@ def call(method: str, **params) -> dict:
     with urllib.request.urlopen(url, data=data, timeout=15) as r:
         body = json.load(r)
     if not body.get("ok"):
-        raise SystemExit(f"Telegram said: {body}")
+        raise TelegramError(f"Telegram said: {body}")
     return body["result"]
 
 
@@ -75,10 +79,17 @@ def send_test(chat_id: str) -> None:
     print("Sent. Check the group on your phone.")
 
 
+def main(argv: list[str]) -> None:
+    try:
+        if len(argv) >= 1 and argv[0] == "chat-id":
+            list_chats()
+        elif len(argv) == 2 and argv[0] == "test":
+            send_test(argv[1])
+        else:
+            print(__doc__)
+    except TelegramError as error:
+        raise SystemExit(str(error))
+
+
 if __name__ == "__main__":
-    if len(sys.argv) >= 2 and sys.argv[1] == "chat-id":
-        list_chats()
-    elif len(sys.argv) == 3 and sys.argv[1] == "test":
-        send_test(sys.argv[2])
-    else:
-        print(__doc__)
+    main(sys.argv[1:])

@@ -32,6 +32,12 @@ service cloud.firestore {
         && myEmail() in get(/databases/$(database)/documents/homes/$(homeId)).data.memberEmails;
     }
 
+    // The fixed room ids from the listener contract (D22). Anything else, such as a "/" in a room name,
+    // would break the routine ids ({room}__{category}) and the checks.
+    function isRoom(r) {
+      return r in ['kitchen', 'bathroom', 'bedroom', 'living_room', 'hallway'];
+    }
+
     function statusRank(s) {
       return s == 'sent' ? 0 : (s == 'seen' ? 1 : (s == 'resolved' ? 2 : -1));
     }
@@ -62,20 +68,21 @@ service cloud.firestore {
       match /devices/{deviceId} {
         allow read: if isMember(homeId);
 
-        // Phone-only mode (A10): the listener writes its own heartbeat.
-        // It can never create or overwrite the hub's document.
-        allow create: if isMember(homeId) && validListener(request.resource.data);
+        // Phone-only mode (A10): the listener writes its own heartbeat, under its own id
+        // listener-{room} (D37). So it can never create or overwrite a hub's document (devices/hub, D39).
+        allow create: if isMember(homeId) && validListener(deviceId, request.resource.data);
         allow update: if isMember(homeId)
           && resource.data.kind == 'listener'
-          && validListener(request.resource.data);
+          && validListener(deviceId, request.resource.data);
         allow delete: if false;
       }
 
-      function validListener(d) {
+      function validListener(deviceId, d) {
         return d.keys().hasAll(['kind', 'room', 'lastHeartbeat'])
           && d.keys().hasOnly(['kind', 'room', 'lastHeartbeat', 'online', 'target', 'battery'])
           && d.kind == 'listener'
-          && d.room is string
+          && isRoom(d.room)
+          && deviceId == 'listener-' + d.room
           && d.lastHeartbeat is timestamp;
       }
 
@@ -92,7 +99,7 @@ service cloud.firestore {
         return d.keys().hasAll(['room', 'deviceId', 'sound', 'confidence', 'start', 'end', 'source'])
           && d.keys().hasOnly(['room', 'deviceId', 'sound', 'category', 'confidence', 'start', 'end', 'source'])
           && d.source == 'phone'
-          && d.room is string
+          && isRoom(d.room)
           && d.sound is string
           && (!('category' in d) || d.category is string)
           && d.confidence is number && d.confidence >= 0 && d.confidence <= 1
@@ -126,6 +133,7 @@ service cloud.firestore {
           && d.status == 'sent'
           && d.type in ['scream', 'distress', 'thud', 'glass', 'smoke_alarm']   // the hub's names (D26)
           && d.severity in ['alert', 'notice']
+          && isRoom(d.room)
           && d.time is timestamp
           && d.message is string;
       }

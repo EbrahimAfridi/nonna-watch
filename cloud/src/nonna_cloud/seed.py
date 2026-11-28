@@ -11,7 +11,7 @@ Usage (from the cloud/ folder):
     uv run python -m nonna_cloud.seed --member you@gmail.com                   # real project
     uv run python -m nonna_cloud.seed --dry-run                                # just print a summary
 
-Options: --home maria   --days 14   --clear (delete old seed events first)   --seed 42 (same fake
+Options: --home maria   --days 14   --clear (delete old seed events and today's routine alerts first)   --seed 42 (same fake
 history every time)   --with-devices (also write listener heartbeats)   --telegram-chat-id ...
 
 Demo of a broken routine (M6): also fill TODAY up to a time, leaving one room silent:
@@ -196,6 +196,27 @@ def clear_seed_events(db, home_id: str) -> int:
         n += len(docs)
 
 
+def clear_todays_routine_alerts(db, home_id: str, tz_name: str, now: datetime | None = None) -> int:
+    """Delete today's alerts from the routine checks (source "routine").
+
+    Otherwise a rehearsal's "No kitchen sounds yet today" is still there at the live demo, the checks see it
+    was already reported, and the demo stays silent. Only today's, and only routine ones: real hub alerts stay.
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    tz = ZoneInfo(tz_name)
+    midnight = (now or datetime.now(tz)).astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    alerts = db.collection("homes").document(home_id).collection("alerts")
+    docs = [d for d in alerts.where(filter=FieldFilter("source", "==", "routine")).stream()
+            if is_today(d.to_dict().get("time"), midnight)]
+    for d in docs:
+        d.reference.delete()
+    return len(docs)
+
+
+def is_today(time, midnight: datetime) -> bool:
+    return time is not None and midnight <= time < midnight + timedelta(days=1)
+
+
 def write(db, home_id: str, events: list[dict], members: list[str], telegram_chat_id: str,
           with_devices: bool) -> None:
     from google.cloud import firestore
@@ -270,6 +291,8 @@ def main(argv: list[str] | None = None) -> None:
     db = connect(emulator=args.emulator, key=args.key)
     if args.clear:
         print(f"Deleted {clear_seed_events(db, args.home)} old seed events.")
+        print(f"Deleted {clear_todays_routine_alerts(db, args.home, tz_name)} of today's routine alerts "
+              "(restart the hub too, it remembers what it already reported).")
     write(db, args.home, events, args.member, args.telegram_chat_id, args.with_devices)
 
 
