@@ -3,6 +3,7 @@ package app.nonnawatch.core.protocol
 import app.nonnawatch.core.Room
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Base64
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -75,6 +76,20 @@ fun heartbeatMessage(tsMs: Long, batteryPct: Int, charging: Boolean, paused: Boo
         ),
     )
 
+/** After the check-in question has played: when it started and ended, in this phone's clock. */
+fun askPlayedMessage(askId: String, startedMs: Long, endedMs: Long): String =
+    json.encodeToString(
+        AskPlayedJson.serializer(),
+        AskPlayedJson(askId = askId, startedMs = startedMs, endedMs = endedMs),
+    )
+
+/**
+ * When the check-in question could not play. The hub then alerts the family at once instead of
+ * waiting 20 s. [reason] must be short printable ASCII, like `no_audio_output`.
+ */
+fun askNotPlayedMessage(askId: String, reason: String): String =
+    json.encodeToString(AskNotPlayedJson.serializer(), AskNotPlayedJson(askId = askId, reason = reason))
+
 /** A message from the hub that the phone acts on. */
 sealed interface HubMessage {
     data class Welcome(val hubId: String, val hubTimeMs: Long, val paused: Boolean) : HubMessage
@@ -83,12 +98,24 @@ sealed interface HubMessage {
 
     /** For the log; only `bad_hello` is followed by a close (4400). */
     data class Error(val code: String, val message: String) : HubMessage
+
+    /**
+     * Play the check-in question now: the family's recording if there is one, otherwise [text]
+     * spoken in [lang] (a language tag like `it-IT`). [reason] is only for the log.
+     */
+    data class Ask(val askId: String, val reason: String, val text: String, val lang: String) : HubMessage
+
+    /** The family's recorded check-in question; it replaces the one saved before. */
+    class CheckinClip(val clipId: String, val mime: String, val audio: ByteArray) : HubMessage
+
+    /** The family deleted their recording: speak the question's text again. */
+    data object CheckinClipDeleted : HubMessage
 }
 
 /**
  * Reads a text message from the hub. Gives null for anything the phone does not act on: a type
- * it does not know (the contract says to ignore those), `ask` and `checkin_clip` until A6, and
- * text that is not a valid message. Unknown fields are ignored too.
+ * it does not know (the contract says to ignore those), and text that is not a valid message.
+ * Unknown fields are ignored too.
  */
 fun parseHubMessage(text: String): HubMessage? {
     return try {
@@ -102,11 +129,23 @@ fun parseHubMessage(text: String): HubMessage? {
             )
             "error" -> json.decodeFromJsonElement(ErrorJson.serializer(), message)
                 .let { HubMessage.Error(it.code, it.message) }
+            "ask" -> json.decodeFromJsonElement(AskJson.serializer(), message)
+                .let { HubMessage.Ask(it.askId, it.reason, it.text, it.lang) }
+            "checkin_clip" -> checkinClip(json.decodeFromJsonElement(CheckinClipJson.serializer(), message))
             else -> null
         }
     } catch (e: IllegalArgumentException) {
-        null // not JSON, or a field of the wrong kind (SerializationException is one of these)
+        // Not JSON, a field of the wrong kind (SerializationException is one of these), or a
+        // clip whose data is not valid base64.
+        null
     }
+}
+
+private fun checkinClip(clip: CheckinClipJson): HubMessage? {
+    val clipId = clip.clipId ?: return HubMessage.CheckinClipDeleted
+    val audio = Base64.getDecoder().decode(clip.dataB64)
+    // An empty recording would replace a good one with silence, so it counts as broken.
+    return if (audio.isEmpty()) null else HubMessage.CheckinClip(clipId, clip.mime, audio)
 }
 
 private val json = Json {
@@ -146,3 +185,38 @@ private data class SetPausedJson(val paused: Boolean)
 
 @Serializable
 private data class ErrorJson(val code: String = "", val message: String = "")
+
+@Serializable
+private data class AskPlayedJson(
+    val type: String = "ask_played",
+    @SerialName("ask_id") val askId: String,
+    val ok: Boolean = true,
+    @SerialName("started_ms") val startedMs: Long,
+    @SerialName("ended_ms") val endedMs: Long,
+)
+
+@Serializable
+private data class AskNotPlayedJson(
+    val type: String = "ask_played",
+    @SerialName("ask_id") val askId: String,
+    val ok: Boolean = false,
+    val reason: String,
+)
+
+// Without an id the phone could not answer, and without the text and the language it could not
+// speak, so those are required. Ignoring such an ask is safe: the hub alerts after 20 s.
+@Serializable
+private data class AskJson(
+    @SerialName("ask_id") val askId: String,
+    val reason: String = "",
+    val text: String,
+    val lang: String,
+)
+
+// clip_id is required but may be null (null means the family deleted the recording).
+@Serializable
+private data class CheckinClipJson(
+    @SerialName("clip_id") val clipId: String?,
+    val mime: String = "",
+    @SerialName("data_b64") val dataB64: String = "",
+)

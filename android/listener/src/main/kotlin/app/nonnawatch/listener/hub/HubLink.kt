@@ -3,14 +3,22 @@ package app.nonnawatch.listener.hub
 import app.nonnawatch.core.Room
 import app.nonnawatch.core.protocol.CloseCodes
 import app.nonnawatch.core.protocol.HubMessage
+import app.nonnawatch.core.protocol.askNotPlayedMessage
+import app.nonnawatch.core.protocol.askPlayedMessage
 import app.nonnawatch.core.protocol.audioFrame
 import app.nonnawatch.core.protocol.heartbeatMessage
 import app.nonnawatch.core.protocol.helloMessage
 import app.nonnawatch.core.protocol.parseHubMessage
 import app.nonnawatch.listener.audio.AudioChunk
+import app.nonnawatch.listener.voice.AskResult
+import app.nonnawatch.listener.voice.NotPlayedReason
+import app.nonnawatch.listener.voice.VoiceCheck
 import kotlin.math.roundToLong
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.coroutineScope
@@ -52,6 +60,9 @@ data class BatteryReading(val percent: Int, val charging: Boolean)
  * [paused] is the pause switch shared with the service: the hub flips it with `welcome` and
  * `set_paused`, the Pause button flips it on the phone, and every change sends a heartbeat at once.
  *
+ * [voiceCheck] plays the check-in question when the hub sends `ask`, and keeps the family's
+ * recording from `checkin_clip`. Audio and heartbeats keep going while the question plays.
+ *
  * Call [send] from the thread that runs [run] (the service uses the main thread for both).
  */
 class HubLink(
@@ -59,6 +70,7 @@ class HubLink(
     private val sockets: HubSocketFactory,
     private val paused: MutableStateFlow<Boolean>,
     private val battery: () -> BatteryReading,
+    private val voiceCheck: VoiceCheck,
     private val clock: () -> Long = System::currentTimeMillis,
     private val jitter: () -> Double = ::randomJitter,
     private val log: (String) -> Unit = {},
@@ -147,32 +159,37 @@ class HubLink(
         // never un-pauses: a pause the person chose on this phone must survive a reconnect.
         if (welcome.paused) paused.value = true
 
-        val current = Session(socket, welcome.hubId)
+        val current = Session(socket, welcome.hubId, questions = this)
         session = current
         _state.value = LinkState.Connected(welcome.hubId, secondsSent = 0)
         log("Welcomed by hub ${welcome.hubId}")
 
-        val heartbeats = launch {
+        launch {
             launch { paused.drop(1).collect { current.sendHeartbeat() } } // at once on every change
             while (true) {
                 current.sendHeartbeat()
                 delay(HEARTBEAT_MS)
             }
         }
-        val end = readUntilEnd(events)
-        heartbeats.cancel()
+        val end = readUntilEnd(events, current)
+        // Stops the heartbeats, and a question still playing: the hub cannot hear the answer over
+        // a lost connection, and alerts the family by itself when no ask_played comes.
+        coroutineContext.cancelChildren()
         end
     }
 
-    private suspend fun readUntilEnd(events: ReceiveChannel<SocketEvent>): SessionEnd {
+    private suspend fun readUntilEnd(events: ReceiveChannel<SocketEvent>, current: Session): SessionEnd {
         for (event in events) {
             when (event) {
                 SocketEvent.Opened -> Unit
                 is SocketEvent.Text -> when (val message = parseHubMessage(event.text)) {
                     is HubMessage.SetPaused -> paused.value = message.paused
                     is HubMessage.Error -> log("Hub error ${message.code}: ${message.message}")
-                    // ask and checkin_clip arrive here until A6; unknown types are ignored, as the
-                    // contract says. Without an ask_played the hub alerts the family after 20 s.
+                    is HubMessage.Ask -> current.ask(message)
+                    // Saved before the next message is read, so an ask right after it plays the new one.
+                    is HubMessage.CheckinClip -> voiceCheck.saveClip(message.audio)
+                    HubMessage.CheckinClipDeleted -> voiceCheck.deleteClip()
+                    // Unknown types are ignored, as the contract says.
                     is HubMessage.Welcome, null -> Unit
                 }
                 is SocketEvent.Closed -> return endFor(event, welcomed = true)
@@ -192,9 +209,34 @@ class HubLink(
         }
     }
 
-    private inner class Session(private val socket: HubSocket, private val hubId: String) {
+    /** One welcomed connection. [questions] runs the check-in questions; it ends with the connection. */
+    private inner class Session(
+        private val socket: HubSocket,
+        private val hubId: String,
+        private val questions: CoroutineScope,
+    ) {
         private var seq = 0 // restarts at 0 on every connection
         private var secondsSent = 0L
+        private var asking: Job? = null
+
+        /** Plays the question without holding up the audio, then tells the hub how it went. */
+        fun ask(ask: HubMessage.Ask) {
+            if (asking?.isActive == true) {
+                log("The hub asked again while a question was still playing")
+                socket.sendText(askNotPlayedMessage(ask.askId, NotPlayedReason.BUSY))
+                return
+            }
+            log("The hub asks (${ask.reason.ifBlank { "no reason given" }}): ${ask.text}")
+            asking = questions.launch {
+                val result = voiceCheck.ask(ask.text, ask.lang)
+                val answer = when (result) {
+                    is AskResult.Played -> askPlayedMessage(ask.askId, result.startedMs, result.endedMs)
+                    is AskResult.NotPlayed -> askNotPlayedMessage(ask.askId, result.reason)
+                }
+                log("Check-in question: $result")
+                socket.sendText(answer)
+            }
+        }
 
         fun sendAudio(chunk: AudioChunk) {
             val frameSeq = seq++

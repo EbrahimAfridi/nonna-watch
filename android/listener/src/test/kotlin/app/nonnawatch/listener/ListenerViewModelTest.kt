@@ -4,6 +4,12 @@ import app.nonnawatch.core.Room
 import app.nonnawatch.listener.hub.LinkState
 import app.nonnawatch.listener.settings.ListenerSettings
 import app.nonnawatch.listener.settings.SettingsStore
+import app.nonnawatch.listener.voice.AskResult
+import app.nonnawatch.listener.voice.NotPlayedReason
+import app.nonnawatch.listener.voice.QuestionLanguage
+import app.nonnawatch.listener.voice.QuestionState
+import java.time.ZoneOffset
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +44,14 @@ class ListenerViewModelTest {
         override fun setPaused(paused: Boolean) {
             pauseCalls += paused
         }
+
+        val tested = mutableListOf<QuestionLanguage>()
+        val testResult = CompletableDeferred<AskResult>()
+
+        override suspend fun testQuestion(language: QuestionLanguage): AskResult {
+            tested += language
+            return testResult.await()
+        }
     }
 
     private class FakeSettings(var saved: ListenerSettings = ListenerSettings()) : SettingsStore {
@@ -54,13 +68,15 @@ class ListenerViewModelTest {
     private val settings = FakeSettings()
     private val ready = ListenerSettings("ws://10.0.2.2:8000/ws/listener", "secret", Room.KITCHEN)
 
-    private fun viewModel() = ListenerViewModel(control, settings)
+    // UTC, so the clock times in these tests do not depend on this PC's time zone.
+    private fun viewModel() = ListenerViewModel(control, settings, zone = ZoneOffset.UTC)
 
     private fun running(
         mic: MicState = MicState.Recording(secondsRecorded = 42, levelPercent = 7),
         hub: LinkState = LinkState.Connected("ebrahim-mac", secondsSent = 40),
         room: Room = Room.HALLWAY,
-    ) = ServiceState.Running(room, mic, hub)
+        question: QuestionState? = null,
+    ) = ServiceState.Running(room, mic, hub, question)
 
     // viewModelScope runs on Android's main thread; in a PC test a test dispatcher stands in.
     @Before
@@ -241,6 +257,85 @@ class ListenerViewModelTest {
 
         viewModel.start()
         assertEquals("Not listening", viewModel.state.value.status)
+    }
+
+    @Test
+    fun itShowsTheLastCheckInQuestion() {
+        val viewModel = viewModel()
+
+        control.state.value = running()
+        assertEquals("", viewModel.state.value.questionStatus) // the hub has not asked yet
+
+        control.state.value = running(question = QuestionState.Playing)
+        assertEquals("Check-in question: playing…", viewModel.state.value.questionStatus)
+
+        control.state.value = running(
+            question = QuestionState.Finished(
+                AskResult.Played(startedMs = 1_795_698_192_400L, endedMs = 1_795_698_195_900L),
+            ),
+        )
+        assertEquals("Check-in question: played at 13:03:15", viewModel.state.value.questionStatus)
+
+        control.state.value = running(
+            question = QuestionState.Finished(AskResult.NotPlayed(NotPlayedReason.NO_AUDIO_OUTPUT)),
+        )
+        assertEquals(
+            "Check-in question: not played, the alarm volume is at zero, or Do Not Disturb is on total silence",
+            viewModel.state.value.questionStatus,
+        )
+    }
+
+    @Test
+    fun theTestSpeaksInTheChosenLanguageAndSaysWhatWentWrong() {
+        val viewModel = viewModel()
+
+        viewModel.selectTestLanguage(QuestionLanguage.URDU)
+        viewModel.testQuestion()
+        assertEquals(listOf(QuestionLanguage.URDU), control.tested)
+        assertTrue(viewModel.state.value.testing)
+        assertEquals("Test (Urdu): playing…", viewModel.state.value.testStatus)
+
+        viewModel.testQuestion() // a second tap while it plays
+        viewModel.selectTestLanguage(QuestionLanguage.ITALIAN)
+        assertEquals(1, control.tested.size)
+        assertEquals(QuestionLanguage.URDU, viewModel.state.value.testLanguage)
+
+        control.testResult.complete(AskResult.NotPlayed(NotPlayedReason.NO_VOICE_FOR_LANGUAGE))
+        assertFalse(viewModel.state.value.testing)
+        assertEquals(
+            "Test (Urdu): not played, this phone has no voice for this language",
+            viewModel.state.value.testStatus,
+        )
+    }
+
+    @Test
+    fun aTestThatPlayedSaysHowLongItTook() {
+        val viewModel = viewModel()
+        control.testResult.complete(AskResult.Played(startedMs = 1_000, endedMs = 2_850))
+
+        viewModel.testQuestion() // works without listening and without a hub
+
+        assertEquals(listOf(QuestionLanguage.ITALIAN), control.tested)
+        assertEquals("Test (Italian): played, 1.8 s", viewModel.state.value.testStatus)
+    }
+
+    @Test
+    fun choosingAnotherLanguageClearsTheLastTest() {
+        val viewModel = viewModel()
+        control.testResult.complete(AskResult.Played(startedMs = 1_000, endedMs = 2_850))
+        viewModel.testQuestion()
+
+        viewModel.selectTestLanguage(QuestionLanguage.HINDI)
+
+        assertEquals("", viewModel.state.value.testStatus)
+    }
+
+    @Test
+    fun secondsWithATenthReadTheSameInEveryLanguage() {
+        assertEquals("0.0 s", tenthsOfSeconds(0))
+        assertEquals("1.8 s", tenthsOfSeconds(1_850))
+        assertEquals("12.0 s", tenthsOfSeconds(12_000))
+        assertEquals("0.0 s", tenthsOfSeconds(-5)) // a clock that stepped back
     }
 
     @Test

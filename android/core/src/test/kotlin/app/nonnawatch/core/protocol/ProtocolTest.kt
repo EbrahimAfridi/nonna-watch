@@ -98,9 +98,63 @@ class ProtocolTest {
 
     @Test
     fun messagesThePhoneDoesNotActOnGiveNull() {
-        assertNull(parseHubMessage("""{"type": "ask", "ask_id": "kitchen-1", "text": "Stai bene?"}"""))
         assertNull(parseHubMessage("""{"type": "something_new", "x": 1}"""))
         assertNull(parseHubMessage("""{"no_type": true}"""))
+    }
+
+    @Test
+    fun askIsRead() {
+        assertEquals(
+            HubMessage.Ask(askId = "kitchen-1795698192000", reason = "thud", text = "Mamma, stai bene?", lang = "it-IT"),
+            parseHubMessage(
+                """{"type": "ask", "ask_id": "kitchen-1795698192000", "reason": "thud",""" +
+                    """ "text": "Mamma, stai bene?", "lang": "it-IT"}""",
+            ),
+        )
+    }
+
+    @Test
+    fun anAskThePhoneCouldNotAnswerOrSpeakGivesNull() {
+        assertNull(parseHubMessage("""{"type": "ask", "text": "Stai bene?", "lang": "it-IT"}"""))
+        assertNull(parseHubMessage("""{"type": "ask", "ask_id": "kitchen-1", "lang": "it-IT"}"""))
+        assertNull(parseHubMessage("""{"type": "ask", "ask_id": "kitchen-1", "text": "Stai bene?"}"""))
+    }
+
+    @Test
+    fun aCheckinClipArrivesAsBase64AndIsDecoded() {
+        // "AAAAIGZ0eXBNNEEg" is the start of an .m4a file: 00 00 00 20 then "ftypM4A ".
+        val clip = parseHubMessage(
+            """{"type": "checkin_clip", "clip_id": "3", "mime": "audio/mp4", "data_b64": "AAAAIGZ0eXBNNEEg"}""",
+        ) as HubMessage.CheckinClip
+
+        assertEquals("3", clip.clipId)
+        assertEquals("audio/mp4", clip.mime)
+        assertArrayEquals(byteArrayOf(0, 0, 0, 0x20) + "ftypM4A ".toByteArray(), clip.audio)
+    }
+
+    @Test
+    fun aClipIdOfNullMeansTheRecordingWasDeleted() {
+        assertEquals(HubMessage.CheckinClipDeleted, parseHubMessage("""{"type": "checkin_clip", "clip_id": null}"""))
+    }
+
+    @Test
+    fun aBrokenClipGivesNullSoTheSavedOneIsKept() {
+        assertNull(parseHubMessage("""{"type": "checkin_clip", "clip_id": "3", "mime": "audio/mp4", "data_b64": "not base64!"}"""))
+        assertNull(parseHubMessage("""{"type": "checkin_clip", "clip_id": "3", "mime": "audio/mp4"}"""))
+        assertNull(parseHubMessage("""{"type": "checkin_clip"}"""))
+    }
+
+    @Test
+    fun askPlayedMatchesTheContract() {
+        assertEquals(
+            """{"type":"ask_played","ask_id":"kitchen-1795698192000","ok":true,""" +
+                """"started_ms":1795698192400,"ended_ms":1795698195900}""",
+            askPlayedMessage("kitchen-1795698192000", startedMs = 1_795_698_192_400L, endedMs = 1_795_698_195_900L),
+        )
+        assertEquals(
+            """{"type":"ask_played","ask_id":"kitchen-1795698192000","ok":false,"reason":"no_audio_output"}""",
+            askNotPlayedMessage("kitchen-1795698192000", reason = "no_audio_output"),
+        )
     }
 
     @Test
