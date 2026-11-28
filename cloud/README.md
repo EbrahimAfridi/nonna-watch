@@ -13,7 +13,7 @@ that fill it and check it. The hub (Ebrahim) and the apps (A) code against
 | `firebase.json`, `.firebaserc`, `firestore.indexes.json` | Config for the Firebase CLI: where the rules are, emulator ports, query indexes. | C1/C3 |
 | `src/nonna_cloud/seed.py` | Writes 14 days of fake history for Maria. | C4 |
 | `src/nonna_cloud/defaults.py` | Maria's home document: settings, help and fine words in 5 languages (exactly D24, D27). | C4 |
-| `src/nonna_cloud/timeline.py` | How events are packed into one Firestore document per room per minute (D20), and unpacked. | C4/C5 |
+| `src/nonna_cloud/events.py` | What one sound event looks like in Firestore (one document per event, decision D30). | C4/C5 |
 | `src/nonna_cloud/db.py` | Connects Python to the emulator or to the real Firestore. | |
 | `src/nonna_cloud/telegram_setup.py` | Finds the family group's chat id and sends a test message. | C2 |
 | `src/nonna_cloud/routine.py` | Learns Maria's usual day and decides: routine missing? long silence? hub offline? Pure logic, no database. | C5 |
@@ -50,8 +50,8 @@ uv sync            # Python 3.12 + libraries, into cloud/.venv (not committed)
 ## Run the tests
 
 ```powershell
-npm run test:rules   # starts a throwaway Firestore emulator, runs 43 rules tests, stops it
-uv run pytest        # seed + routine tests (36), no emulator needed
+npm run test:rules   # starts a throwaway Firestore emulator, runs 44 rules tests, stops it
+uv run pytest        # seed + routine tests (35), no emulator needed
 ```
 
 **Why an emulator:** it's a copy of Firestore running on your laptop. It's free, it needs no internet,
@@ -65,7 +65,7 @@ npm run emulators                       # terminal 1: emulator + web UI at http:
 uv run python -m nonna_cloud.seed --emulator --member you@gmail.com --with-devices   # terminal 2
 ```
 
-Open http://127.0.0.1:4000/firestore and click through `homes/maria/timeline`. The emulator forgets
+Open http://127.0.0.1:4000/firestore and click through `homes/maria/events`. The emulator forgets
 everything when you stop it (Ctrl+C).
 
 ---
@@ -106,8 +106,8 @@ Free Spark plan, so no card is needed. Do it with the Google account the team wi
    ```powershell
    uv run python -m nonna_cloud.seed --member your.email@gmail.com --telegram-chat-id CHAT_ID_FROM_C2
    ```
-   Then look at *Firestore Database* in the console: `homes/maria/timeline` with about 400 documents
-   holding about 410 events (one document per room per minute, decision D20).
+   Then look at *Firestore Database* in the console: `homes/maria/events` with about 410 events
+   (one document per event, decision D30).
 10. Post the **project ID** in the group and record it in `DECISIONS.md`.
 
 ## C2: Telegram bot and family group (only you can do this, about 15 minutes)
@@ -139,7 +139,7 @@ Free Spark plan, so no card is needed. Do it with the Google account the team wi
 A silent **listener phone** is not checked here: the hub already holds every phone's connection and alerts
 after 5 minutes itself (decision D29).
 
-**How it learns "usual".** Once a day it reads the last 14 days of the timeline. For each room, and each
+**How it learns "usual".** Once a day it reads the last 14 days of events. For each room, and each
 room+category (the hub's `water`, `cooking`, `door`, ...), it notes which hours of the day usually have activity and what time the first sound of the day
 usually is. The TV, radio and music are ignored for this, because they can play with nobody there. The result
 is saved in `homes/maria/routines`, so the family app can show it too.
@@ -174,13 +174,12 @@ The first line writes 14 normal days, plus a normal morning today with no kitche
   (example at the top of `checks.py`). Add `nonna-cloud = { path = "../cloud" }` to the hub's dependencies.
   `Checker.run()` returns findings; run the voice check for those with `voice_check=True`, then call
   `Checker.report()` and send the Telegram message.
-- **Ebrahim (hub, E6):** follow [docs/firestore-schema.md](../docs/firestore-schema.md). The timeline is D20:
-  one `homes/{id}/timeline/{room}_{flushedAtMillis}` document per room per flush, with an `events` array
-  (`category`, `label`, `confidence`, `start`, `end`). `nonna_cloud.timeline.to_chunks` shows the exact shape.
-  Use Firestore `Timestamp`s (Python: timezone-aware `datetime`), keep `flushedAt` when retrying from the
-  offline queue so a retry overwrites instead of duplicating, put `source: "hub"` on chunks, and write a
-  `devices/hub` heartbeat every 5 minutes (the cloud's hub-offline check reads it). Alert `type`s are your
-  `rules.py` names.
+- **Ebrahim (hub, E6):** follow [docs/firestore-schema.md](../docs/firestore-schema.md). Events are D30: one
+  `homes/{id}/events/{deviceId}_{startEpochMillis}` document per event, with `room`, `deviceId`, `sound`,
+  `confidence`, `start`, `end`, `source: "hub"`, and please also `category` (your category name; the routine
+  learner uses it). Use Firestore `Timestamp`s (Python: timezone-aware `datetime`); the id makes offline-queue
+  retries overwrite instead of duplicating. Write a `devices/hub` heartbeat every 5 minutes (the cloud's
+  hub-offline check reads it). Alert `type`s are your `rules.py` names.
 - **A (Android):** the "my homes" query must be
   `whereArrayContains("memberEmails", user.email.lowercase())`, because without that filter the rules
   refuse the query. Alerts can only be moved forward (`sent → seen → resolved`), and `answeredBy` must be

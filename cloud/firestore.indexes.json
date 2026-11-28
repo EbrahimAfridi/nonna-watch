@@ -1,7 +1,7 @@
 {
   "indexes": [
     {
-      "collectionGroup": "timeline",
+      "collectionGroup": "events",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "room", "order": "ASCENDING" },

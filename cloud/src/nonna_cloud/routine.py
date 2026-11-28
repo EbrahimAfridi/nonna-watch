@@ -14,8 +14,8 @@ The three checks (requirements, "Detection rules"):
                     the hub, which holds every phone's connection: decision D29. Only the cloud can
                     notice the hub dying, so that is the one offline check here.)
 
-Events are the hub's categories (water, cooking, door, ...), not raw YAMNet labels, because one
-habit can show up under several labels ("Water tap, faucet", "Sink").
+Habits are learned per category (the hub's water, cooking, door, ...), not per raw YAMNet label,
+because one habit can show up under several labels ("Water tap, faucet", "Sink"). See events.py.
 
 How "usual" is learned, in plain words:
   For every room (and every room+category) we look at the last 14 days and note, for each hour of the
@@ -34,6 +34,7 @@ from statistics import median
 from zoneinfo import ZoneInfo
 
 from nonna_cloud.defaults import DEFAULT_SETTINGS
+from nonna_cloud.events import category_of
 
 ALL = "*"
 
@@ -94,7 +95,7 @@ def routine_id(room: str, category: str) -> str:
 
 
 def is_activity(e: dict) -> bool:
-    return e["category"] not in PASSIVE_CATEGORIES
+    return category_of(e) not in PASSIVE_CATEGORIES
 
 
 def settings_for(home: dict) -> dict:
@@ -155,7 +156,7 @@ def learn(events: list[dict], tz: ZoneInfo, min_share: float = 0.6) -> dict[str,
         day_firsts[local.date()] = min(minute, day_firsts.get(local.date(), minute))
 
     for e in events:
-        add((e["room"], e["category"]), e)         # every category, for the app to show
+        add((e["room"], category_of(e)), e)        # every category, for the app to show
         if is_activity(e):
             add((e["room"], ALL), e)               # "someone is in the kitchen"
             add((ALL, ALL), e)                     # "someone is in the house"
@@ -272,7 +273,7 @@ def check_hub_offline(devices: dict[str, dict], now: datetime, tz: ZoneInfo, s: 
 
 def run_checks(home: dict, routines: dict[str, Routine], events: list[dict],
                devices: dict[str, dict], now: datetime) -> list[Finding]:
-    """All checks for one home at time `now`. `events` (flat, see timeline.py) should cover the last 24 hours."""
+    """All checks for one home at time `now`. `events` (see events.py) should cover the last 24 hours."""
     tz = ZoneInfo(home.get("timezone", "Europe/Rome"))
     s = settings_for(home)
     name = home.get("name", "She")

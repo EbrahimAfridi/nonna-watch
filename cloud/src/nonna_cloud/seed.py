@@ -19,10 +19,9 @@ Demo of a broken routine (M6): also fill TODAY up to a time, leaving one room si
     uv run python -m nonna_cloud.seed --clear --today-until 10:30 --skip-room kitchen
     uv run python -m nonna_cloud.checks --now 10:30            # -> "No kitchen sounds yet today"
 
-Events are packed the way the hub packs them (decision D20, see timeline.py): one document per room
-per 60-second flush, in homes/{home}/timeline. Maria's fake events are spread out, so most minutes hold
-just one: 14 days is about 400 writes (free quota: 20,000 per day). A real, busy room saves far more. Chunks from this script have
-source == "seed", so --clear only ever deletes fake data.
+Each event is one document in homes/{home}/events, as the hub writes them (decision D30, see events.py).
+About 30 events a day, so 14 days is about 410 writes (free quota: 20,000 per day). Events from this
+script have source == "seed", so --clear only ever deletes fake data.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from nonna_cloud.defaults import demo_home
-from nonna_cloud.timeline import CATEGORY_OF, chunk_id, device_id, to_chunks
+from nonna_cloud.events import CATEGORY_OF, device_id, event_id
 
 
 @dataclass(frozen=True)
@@ -135,11 +134,13 @@ def _event(room: str, label: str, start: datetime, end: datetime, rng: random.Ra
     end = max(end.astimezone(timezone.utc).replace(microsecond=0), start)
     return {
         "room": room,
+        "deviceId": device_id(room),
+        "sound": label,
         "category": CATEGORY_OF[label],
-        "label": label,
         "confidence": round(rng.uniform(0.45, 0.95), 2),
         "start": start,
         "end": end,
+        "source": "seed",
     }
 
 
@@ -149,8 +150,16 @@ def generate(days: int, tz_name: str = "Europe/Rome", today: date | None = None,
     today = today or datetime.now(tz).date()
     rng = random.Random(seed)
     out: list[dict] = []
+    seen: set[str] = set()
     for i in range(days, 0, -1):
-        out.extend(generate_day(today - timedelta(days=i), tz, rng))
+        for e in generate_day(today - timedelta(days=i), tz, rng):
+            # Two random events can land on the same device in the same second. They would get the
+            # same document id and one would overwrite the other, so nudge the second one by a second.
+            while event_id(e) in seen:
+                e["start"] += timedelta(seconds=1)
+                e["end"] = max(e["end"], e["start"])
+            seen.add(event_id(e))
+            out.append(e)
     return out
 
 
@@ -173,7 +182,7 @@ def generate_today(until: str, skip_rooms: list[str], tz_name: str = "Europe/Rom
 # ---------------------------------------------------------------- Firestore part
 
 def clear_seed_events(db, home_id: str) -> int:
-    events = db.collection("homes").document(home_id).collection("timeline")
+    events = db.collection("homes").document(home_id).collection("events")
     n = 0
     while True:
         from google.cloud.firestore_v1.base_query import FieldFilter
@@ -208,13 +217,12 @@ def write(db, home_id: str, events: list[dict], members: list[str], telegram_cha
     if not home_ref.get().to_dict().get("memberEmails"):
         print("Note: memberEmails is empty, so nobody can read this home from the app. Rerun with --member you@gmail.com.")
 
-    chunks = to_chunks(events, source="seed")
-    for i in range(0, len(chunks), 400):             # a batch holds at most 500 writes
+    for i in range(0, len(events), 400):             # a batch holds at most 500 writes
         batch = db.batch()
-        for c in chunks[i:i + 400]:
-            batch.set(home_ref.collection("timeline").document(chunk_id(c)), c)
+        for e in events[i:i + 400]:
+            batch.set(home_ref.collection("events").document(event_id(e)), e)
         batch.commit()
-    print(f"Wrote {len(events)} events in {len(chunks)} timeline documents.")
+    print(f"Wrote {len(events)} events.")
 
     if with_devices:
         now = datetime.now(timezone.utc)
@@ -261,7 +269,7 @@ def main(argv: list[str] | None = None) -> None:
     from nonna_cloud.db import connect
     db = connect(emulator=args.emulator, key=args.key)
     if args.clear:
-        print(f"Deleted {clear_seed_events(db, args.home)} old seed timeline documents.")
+        print(f"Deleted {clear_seed_events(db, args.home)} old seed events.")
     write(db, args.home, events, args.member, args.telegram_chat_id, args.with_devices)
 
 

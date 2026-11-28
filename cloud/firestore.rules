@@ -79,28 +79,25 @@ service cloud.firestore {
           && d.lastHeartbeat is timestamp;
       }
 
-      // ---------- timeline (decision D20: one document per room per flush) ----------
-      match /timeline/{chunkId} {
+      // ---------- events (decision D30: one document per sound event) ----------
+      match /events/{eventId} {
         allow read: if isMember(homeId);
-        // Only phone-only mode creates chunks from an app; the hub uses the Admin SDK.
-        allow create: if isMember(homeId) && validPhoneChunk(request.resource.data);
+        // Only phone-only mode creates events from an app; the hub uses the Admin SDK.
+        allow create: if isMember(homeId) && validPhoneEvent(request.resource.data);
         // The timeline is history: nobody edits or deletes it from an app.
         allow update, delete: if false;
       }
 
-      // Rules can't loop over the events inside a chunk, so this checks the chunk's own fields and
-      // caps its size. The apps validate each event themselves.
-      function validPhoneChunk(d) {
-        return d.keys().hasAll(['room', 'deviceId', 'source', 'flushedAt', 'start', 'end', 'events'])
-          && d.keys().hasOnly(['room', 'deviceId', 'source', 'flushedAt', 'start', 'end', 'events'])
+      function validPhoneEvent(d) {
+        return d.keys().hasAll(['room', 'deviceId', 'sound', 'confidence', 'start', 'end', 'source'])
+          && d.keys().hasOnly(['room', 'deviceId', 'sound', 'category', 'confidence', 'start', 'end', 'source'])
           && d.source == 'phone'
           && d.room is string
-          && d.deviceId is string
-          && d.flushedAt is timestamp
+          && d.sound is string
+          && (!('category' in d) || d.category is string)
+          && d.confidence is number && d.confidence >= 0 && d.confidence <= 1
           && d.start is timestamp && d.end is timestamp
-          && d.end >= d.start
-          && d.events is list
-          && d.events.size() >= 1 && d.events.size() <= 500;
+          && d.end >= d.start;
       }
 
       // ---------- alerts ----------

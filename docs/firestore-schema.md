@@ -1,6 +1,6 @@
 # Firestore schema and security rules (S2)
 
-Owner: Track B (cloud). Status: **v2**, follows decisions D20, D22, D24, D26, D27 and D29. Open for comments
+Owner: Track B (cloud). Status: **v3**, follows decisions D22, D24, D26, D27, D29 and D30. Open for comments
 from Ebrahim (hub) and A (Android).
 Any change to a field name or type after it is agreed goes into `DECISIONS.md` first.
 
@@ -23,12 +23,12 @@ are in [`cloud/tests/rules/`](../cloud/tests/rules/).
   converts them automatically: Python `datetime` (timezone-aware), Kotlin `com.google.firebase.Timestamp`.
   The ISO string in CONTEXT.md is only how an event looks when printed.
 - **Room ids** are fixed by the listener protocol (D22): `kitchen`, `bathroom`, `bedroom`, `living_room`, `hallway`.
-- **Sounds** are stored twice: `category`, one of the hub's 19 household categories (`water`, `cooking`, `door`,
-  `tv_music`, ...; see `hub/nonna_hub/categories.py`), and `label`, the YAMNet display name at the peak
-  (`"Water tap, faucet"`). Routines are learned from the category, which is stabler.
+- **Sounds:** `sound` is the YAMNet display name at the peak (`"Water tap, faucet"`), as D30 says. Events also
+  carry `category`, one of the hub's 19 household categories (`water`, `cooking`, `door`, `tv_music`, ...; see
+  `hub/nonna_hub/categories.py`). The routine learner prefers it, because one habit shows up under several labels.
 - **Languages** are ISO 639-1 codes: `it`, `en`, `hi`, `ur`, `bs`.
 - **Emails are stored lowercase.** Security rules compare them to the signed-in user's email.
-- **The hub picks its own document ids for timeline chunks and alerts**, so retrying from the offline queue
+- **The hub picks its own document ids for events and alerts**, so retrying from the offline queue
   overwrites the document instead of adding a duplicate (see each collection below).
 
 ## `homes/{homeId}`
@@ -78,40 +78,31 @@ One document per listener phone, plus one for the hub itself (so the cloud can n
 | `target` | string | `"hub"` | `hub` / `cloud` / `local` (the A10 setting). |
 | `battery` | number, optional | `87` | Percentage, if the listener reports it. |
 
-## `homes/{homeId}/timeline/{chunkId}`
+## `homes/{homeId}/events/{eventId}`
 
-The sound history. **Decision D20:** the hub does not write one document per sound. Every 60 seconds
-(10 s during the demo) it writes **one document per room**, a *chunk*, holding every event in that room
-that ended since the last write. Empty flushes are skipped. That caps the timeline at 1,440 writes per
-room per day, however busy the room is (free quota: 20,000 writes a day). Alerts are still written at once.
+The sound history (the family app's timeline). **Decision D30:** one document per sound event, written by the
+hub when the event ends. No batching. Alerts are written at once. A demo and our testing use a few hundred
+writes a day against the free 20,000.
 
 | Field | Type | Example | Notes |
 |---|---|---|---|
 | `room` | string | `"kitchen"` | |
 | `deviceId` | string | `"listener-kitchen"` | The listener that heard it. |
+| `sound` | string | `"Water tap, faucet"` | YAMNet display name at the peak. Never a transcript (D25). |
+| `category` | string | `"water"` | The hub's category for it (`hub/nonna_hub/categories.py`). Optional, but please include it: the routine learner uses it. Without it, the learner falls back to `sound`. |
+| `confidence` | number | `0.91` | The peak score, 0–1. |
+| `start` | Timestamp | | |
+| `end` | Timestamp | | `end >= start`. |
 | `source` | string | `"hub"` | `hub` / `cloud` / `phone` / `seed` (fake history, C4). |
-| `flushedAt` | Timestamp | | When the hub wrote this chunk. |
-| `start` | Timestamp | | Earliest `start` of the events inside. Lets queries pick chunks by time. |
-| `end` | Timestamp | | Latest `end` of the events inside. |
-| `events` | array of map | see below | At least 1, at most 500. |
 
-Each entry in `events`:
-
-| Field | Type | Example | Notes |
-|---|---|---|---|
-| `category` | string | `"water"` | One of the hub's categories (`hub/nonna_hub/categories.py`). |
-| `label` | string | `"Water tap, faucet"` | YAMNet display name at the peak. Never a transcript (D25). |
-| `confidence` | number | `0.91` | Peak score, 0–1. |
-| `start`, `end` | Timestamp | | `end >= start`. |
-
-**Document id:** `{room}_{flushedAtEpochMillis}`. A room is flushed at most once per instant, and a retry from
-the offline queue keeps the same `flushedAt`, so it overwrites instead of duplicating.
+**Document id:** `{deviceId}_{startEpochMillis}`. One device can't start two events in the same millisecond,
+so a retry from the offline queue overwrites instead of duplicating.
 
 **Queries the apps need:**
-- Today's timeline: `timeline.where("end", ">=", midnight)`, then show every event inside each chunk.
-- One room: add `.where("room", "==", "kitchen")` (index provided in `cloud/firestore.indexes.json`).
+- Today's timeline: `events.whereGreaterThanOrEqualTo("start", midnight).orderBy("start")`. No index needed.
+- One room: add `.whereEqualTo("room", "kitchen")` (index provided in `cloud/firestore.indexes.json`).
 
-Python helpers that pack and unpack chunks: `cloud/src/nonna_cloud/timeline.py` (`to_chunks`, `flatten`).
+Python helpers: `cloud/src/nonna_cloud/events.py` (`event_id`, `category_of`).
 
 ## `homes/{homeId}/alerts/{alertId}`
 
@@ -175,7 +166,7 @@ One document per signed-in family member, written by the family app itself.
 3. Members can change a home's settings, languages, help words, contacts and mode. They **cannot** create
    or delete homes, and cannot remove themselves from `memberEmails` (so nobody locks themselves out by accident).
 4. Members can **only move alerts forward**: change `status`, `answeredBy`, `seenAt`, `resolvedAt`. They
-   cannot edit the message or invent an alert, except phone-only mode, which may create timeline chunks and
+   cannot edit the message or invent an alert, except phone-only mode, which may create events and
    the alerts YAMNet alone can detect (`scream`, `distress`, `thud`, `glass`, `smoke_alarm`) with `source == "phone"`.
 5. Routines are read-only for everyone except the service account.
 6. `users/{uid}` is readable and writable only by that same user.

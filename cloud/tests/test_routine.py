@@ -10,7 +10,7 @@ from nonna_cloud.routine import (
     check_hub_offline, check_long_silence, check_missing_routines, learn, run_checks, settings_for,
 )
 from nonna_cloud.seed import generate
-from nonna_cloud.timeline import CATEGORY_OF
+from nonna_cloud.events import CATEGORY_OF
 
 TZ = ZoneInfo("Europe/Rome")
 TODAY = date(2026, 11, 26)               # a Thursday
@@ -21,10 +21,10 @@ def at(hh: int, mm: int = 0, day: date = TODAY) -> datetime:
     return datetime(day.year, day.month, day.day, hh, mm, tzinfo=TZ)
 
 
-def ev(room: str, label: str, start: datetime, minutes: float = 2) -> dict:
-    """A flat event (timeline.py) for a YAMNet label, with the hub's category for it."""
-    return {"room": room, "category": CATEGORY_OF[label], "label": label, "confidence": 0.9,
-            "start": start, "end": start + timedelta(minutes=minutes)}
+def ev(room: str, sound: str, start: datetime, minutes: float = 2) -> dict:
+    """An event document (D30) for a YAMNet label, with the hub's category for it."""
+    return {"room": room, "deviceId": f"listener-{room}", "sound": sound, "category": CATEGORY_OF[sound],
+            "confidence": 0.9, "start": start, "end": start + timedelta(minutes=minutes), "source": "test"}
 
 
 @pytest.fixture(scope="module")
@@ -61,6 +61,18 @@ def test_tv_does_not_count_as_her_being_active():
     assert "kitchen__tv_music" in r            # still learned, so the app can show it
     assert "kitchen__all" not in r             # but it proves nothing about Maria
     assert "_activity" not in r
+
+
+def test_events_without_a_category_still_work():
+    """D30 lists room, sound, confidence, start, end; if the hub leaves category out, use the label."""
+    events = [ev("kitchen", "Water tap, faucet", at(8, 0, TODAY - timedelta(days=d))) for d in range(1, 8)]
+    for e in events:
+        del e["category"]
+    r = learn(events, TZ)
+    assert "kitchen__water" in r and r["kitchen__all"].daysObserved == 7
+    tv = ev("kitchen", "Television", at(9, 0))
+    del tv["category"]
+    assert "_activity" not in learn([tv], TZ)      # a TV is still not a sign of life
 
 
 def test_days_without_any_data_are_not_counted():
