@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "default": "demo-nonna-watch",
+    "live": "nonna-watch-team"
+  }
+}
